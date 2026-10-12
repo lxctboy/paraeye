@@ -1,7 +1,7 @@
 package com.paraeye.app.depth
 
 import org.junit.Assert.assertArrayEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
@@ -29,12 +29,13 @@ class RgbaToNchwTest {
 
     @Test
     fun planeOrderIsRgb() {
-        // 单像素：R=255,G=0,B=0 → 只有 plane0 是最大正值
+        // 单像素 R=255,G=0,B=0：三个平面必须分别是 R/G/B 通道的归一化值
+        // （平面顺序写错会让深度图整体错乱，故用精确值断言而非阈值）
         val rgba = byteArrayOf(255.toByte(), 0, 0, 255.toByte())
         val out = FloatArray(3)
         ImagePreprocessor.rgbaToNchwInto(rgba, 1, 1, out)
-        assertTrue("R 平面应为最大正值", out[0] > 2f)
-        assertTrue("G 平面应为最小负值", out[1] < -2f)
-        assertTrue("B 平面应为最小负值", out[2] < -2f)
+        assertEquals(2.2489f, out[0], 1e-3f)    // n(255, 0)
+        assertEquals(-2.0357f, out[1], 1e-3f)   // n(0, 1)
+        assertEquals(-1.8044f, out[2], 1e-3f)   // n(0, 2)
     }
 }
