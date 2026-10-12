@@ -23,3 +23,7 @@ paraeye/p0/__pycache__/
 # ---- OS ----
 .DS_Store
 Thumbs.db
+
+# ---- 测试截图/临时文件 ----
+paraeye/Screenshot_*
+*.tmp
