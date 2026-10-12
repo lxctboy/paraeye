@@ -131,17 +131,22 @@ def export_size(model, w: int, h: int, out_path: str) -> bool:
     wrapper = DepthOnly(model).eval()
     sample = (torch.randn(1, 3, h, w),)
 
-    t0 = time.time()
-    ep = torch.export.export(wrapper, sample)
-    print(f"  torch.export ok ({time.time() - t0:.0f}s)")
-
-    t0 = time.time()
     # FP32 中间产物单独放 fp32/ 子目录，免得被 artifact / release 一起上传（99MB 级）
     fp32_dir = os.path.join(os.path.dirname(out_path) or ".", "fp32")
     os.makedirs(fp32_dir, exist_ok=True)
     fp32_path = os.path.join(fp32_dir, os.path.basename(out_path).replace(
         ".tflite", "_fp32.tflite"))
-    litert_torch.convert(ep, sample).export(fp32_path)
+
+    # 官方用法是 convert(nn.Module, args)，由 Converter 内部走 torch.export；
+    # 兜底再试 ExportedProgram.module()（不同 torch 版本入参接受度不一）
+    t0 = time.time()
+    try:
+        litert_torch.convert(wrapper, sample).export(fp32_path)
+    except Exception as e:  # noqa: BLE001
+        print(f"  convert(nn.Module) 失败({type(e).__name__})，"
+              f"回退 ExportedProgram.module()")
+        ep = torch.export.export(wrapper, sample)
+        litert_torch.convert(ep.module(), sample).export(fp32_path)
     print(f"  fp32 tflite: {os.path.getsize(fp32_path) / 1e6:.1f} MB "
           f"({time.time() - t0:.0f}s)")
 
