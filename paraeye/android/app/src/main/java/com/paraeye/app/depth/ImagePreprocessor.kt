@@ -24,8 +24,17 @@ object ImagePreprocessor {
         require(resized.width == MODEL_W && resized.height == MODEL_H)
         val pixels = IntArray(MODEL_W * MODEL_H)
         resized.getPixels(pixels, 0, MODEL_W, 0, 0, MODEL_W, MODEL_H)
-        val out = FloatArray(3 * MODEL_H * MODEL_W)
-        val plane = MODEL_H * MODEL_W
+        return argbToNchw(pixels)
+    }
+
+    /**
+     * 纯函数：ARGB 像素数组 -> NCHW float（长度 3×H×W）。
+     * 平面布局：plane0=R, plane1=G, plane2=B；每平面按行优先逐像素排列。
+     * 抽出来是为了能在 JVM 单测里脱离 Bitmap 验证通道顺序。
+     */
+    fun argbToNchw(pixels: IntArray): FloatArray {
+        val out = FloatArray(3 * pixels.size)
+        val plane = pixels.size
         for (i in pixels.indices) {
             val p = pixels[i]
             out[i] = normalize((p shr 16) and 0xFF, 0)
