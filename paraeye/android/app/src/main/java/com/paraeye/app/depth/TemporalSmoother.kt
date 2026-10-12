@@ -21,7 +21,7 @@ class TemporalSmoother(private val alpha: Float = 0.7f) {
     fun apply(current: FloatArray): FloatArray {
         val p = prev
         if (p == null || p.size != current.size) {
-            prev = current.copy()
+            prev = current.copyOf()
             return current
         }
         val a = alpha

@@ -40,8 +40,9 @@ class DepthEstimator(private val context: Context) {
 
     private var model: CompiledModel? = null
     private var loadedKey: String? = null
-    private var inputBuffers: Array<TensorBuffer>? = null
-    private var outputBuffers: Array<TensorBuffer>? = null
+    // 注意：LiteRT V2 的 createInputBuffers()/createOutputBuffers() 返回的是 List 而非 Array
+    private var inputBuffers: List<TensorBuffer>? = null
+    private var outputBuffers: List<TensorBuffer>? = null
 
     val isLoaded: Boolean get() = model != null
 
