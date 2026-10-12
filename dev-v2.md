@@ -151,7 +151,7 @@
 | 阶段 | 目标                | 关键变更                                         |
 | -- | ----------------- | -------------------------------------------- |
 | P0 | 离线验证 + 参数定稿 | **✅ 已完成（2026-10-12）**：符号验证通过，定档 max_disp=1% / alpha=0.7，见 4.9 |
-| P1 | Android 单帧推理跑通    | **🔧 进行中（2026-10-12 骨架完成）**：V2 Small 与 DA3 Small（LiteRT GPU）**实测对比后终选**；实测 INT8 精度；搭好 GitHub Actions APK 打包 |
+| P1 | Android 单帧推理跑通    | **🟡 CI 已全绿（2026-10-12）**：APK 编译 + 单测通过；待真机回填 5.1 表（V2 Small vs DA3 Small 实测后终选模型） |
 | P2 | GPU 渲染：视图合成 + SBS | 低分辨率引导滤波 + 上采样                               |
 | P3 | 实时流水线（本地文件）       | 摄像头流移出本阶段                                    |
 | P4 | 性能优化 + 摄像头流       | 帧预算达标、功耗控制、评估光流                              |
@@ -225,6 +225,22 @@ jobs:
 **本机无 JDK/Android SDK**，编译验证走 CI；API 均已按官方 codelab/示例核对（CompiledModel.create(assets, name, Options(accelerator), env) + GpuOptions FP32）。
 
 **P1 剩余（需真机）**：四组合基准数据回填 5.1 表；GPU 失败回退 CPU 路径验证；与 P0 Python 输出定性对比。
+
+#### 5.2.1 CI 首次构建结果（2026-10-12，commit `9b1beae`）
+
+**✅ assembleDebug + testDebugUnitTest 全绿**，产物 `paraeye-debug-apk`（128 MB，内嵌 FP32+INT8 两个 tflite）。
+
+修了三轮，全部为依赖/测试问题，**实现代码无误**：
+
+| # | 报错 | 根因 | 解法 |
+|---|------|------|------|
+| 1 | `Class 'litert.CompiledModel' was compiled with an incompatible version of Kotlin. Actual metadata 2.4.0, compiler 2.0.0 reads up to 2.1.0` | LiteRT 2.3.0 的 Kotlin API 用 Kotlin 2.4 编译；Kotlin 编译器只能读高一个版本的元数据 | Kotlin 插件 **2.0.21 → 2.4.20**（AGP 8.7.3 / Gradle 8.11.1 无需连带升级） |
+| 2 | `MainActivity.kt:56:70 Unresolved reference 'Request'` | `PickVisualMediaRequest` 是 `androidx.activity.result` 的**顶层类**，不是 `PickVisualMedia` 的嵌套类 | `PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)` |
+| 3 | 2 个单测 AssertionError | 测试自身写错：张量元素数魔术数字 1065684（实际 `3×518×686 = 1,066,044`）；断言中灰归一化 `< 0`（实际 `(128/255-0.485)/0.229 = +0.074`） | 修正预期值；并把 `argbToNchw` 抽成脱离 Bitmap 的纯函数，补 NCHW 三平面布局测试 |
+
+**⚠️ 降级红线**：Kotlin 插件不可降到 2.4 以下，否则 Litert API 元数据读不了，会整编译失败。
+
+**技术债**：CI 有 `Gradle 8.11.1 已废弃（Kotlin 2.5 起最低要求 8.14.4）` 警告，当前不阻塞；将来升 Kotlin 时需同步升 Gradle。APK 128 MB 偏大，P5 可改为模型按需下载或 ABI 分包。
 
 | 事项 | 结论 | 确认时间 |
 |------|------|----------|
