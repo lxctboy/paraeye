@@ -13,10 +13,12 @@
 - 推理：**LiteRT 2.3.0 V2 CompiledModel API**（`com.google.ai.edge.litert:litert` + `litert-gpu`）
 - 渲染：**OpenGL ES 2.0**（兼容性优先，未用 GLES3 浮点纹理）
 - 解码：**MediaExtractor + MediaCodec**（输出 Surface → SurfaceTexture，全程无 CPU 拷贝）
-- 模型：HuggingFace `litert-community/depth-anything-v2-small`（官方 LiteRT 导出）
-  - INT8（dynamic wi8 / afp32，27.7MB）—— 移动端首选
-  - FP32（99.5MB）—— 精度基准
-  - 输入契约：`[1, 3, 518, 686]` NCHW，RGB，/255 + ImageNet mean/std，输出 `[1, 518, 686]` 相对深度
+- 模型：**P4 起改用自导出的 280×518 INT8**（社区原版只有 686×518，会把竖屏视频竖挤 2.35 倍）
+  - 由 `.github/workflows/export-tflite.yml` 重导出，发布到滚动 release「models」，构建时下载
+  - 量化与社区原版同款：AI Edge Quantizer `dynamic_wi8_afp32`（int8 权重 + fp32 接口，27.6MB）
+  - 输入契约：`[1, 3, 518, 280]` NCHW，RGB，/255 + ImageNet mean/std，输出 `[1, 518, 280]` 相对深度
+  - 换 280×518 的收益：深度质量 corr 0.766 → 0.977（vs 原生宽高比真值）、token 数 0.41 倍；
+    tflite vs torch 一致性 corr 0.9998 / relMAE 0.0072
 
 > ⚠️ **降级红线**：LiteRT 2.3.0 的 Kotlin API 元数据为 2.4.0，**Kotlin 插件不可低于 2.4**，否则 `compileDebugKotlin` 全量报 “incompatible Kotlin metadata”。
 
@@ -70,7 +72,7 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
                                             │  [归一化 pass: texMtx + 可选翻转]
                                             ▼
                                        displayTex (2D, row0 = 图像顶部)
-                                            │  [降采样 pass → FBO 686×518]
+                                            │  [降采样 pass → FBO 280×518]
                                             ▼
                                      glReadPixels ──▶ RGBA 字节
                                             │  （双缓冲池零拷贝交推理线程，用完 recycle 归还）
@@ -108,7 +110,7 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 
 **纹理坐标总约定**：`displayTex` / `depthTex` 的 **row0 = 图像顶部**（与 `GLUtils.texImage2D` 上传 Bitmap 的布局一致）。GL 帧缓冲原点在左下，所以所有「渲染到 FBO」的 pass 都要用 `aPos.y*0.5+0.5` 再翻一次——这是 P3 最容易踩的坑。
 
-深度以单通道 8bit（`GL_LUMINANCE`）上传：视差仅 1% 宽度，8bit 量化误差约 0.2px（1080p），可忽略。上传前须 `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)`，因为 686 不是 4 的倍数。
+深度以单通道 8bit（`GL_LUMINANCE`）上传：视差仅 1% 宽度，8bit 量化误差约 0.2px（1080p），可忽略。上传前设 `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)`（宽度非 4 的倍数时必需；当前 280 满足，但改尺寸容易踩回这个坑）。
 
 观看 SBS 请用**平行眼（Parallel View）**：放松双眼让视线“看向远处”，使左眼盯左半图、右眼盯右半图，中间会出现第三个融合画面。
 
@@ -138,9 +140,9 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 ## 已知边界
 
 - **GPU×INT8 不加速**：GPU delegate 按 FP32 执行权重（保险默认），INT8 模型在 GPU 上与 FP32 耗时几乎相同；GPU 上提速靠 FP16 复选框
-- 推理本身仍 ~177ms（弱 GPU FP32）：真正的数量级提升要靠**降输入分辨率**（ViT 计算量 ∝ token²，686×518=1813 tokens，518×518=1369，432×324≈713）——需重新导出模型，排 P4
-- 预处理 LUT + 预分配已做，但仍是 CPU 循环（686×518×3 ≈ 106 万元素）
-- 模型固定 686×518 拉伸输入；GL 渲染按源图宽高比 letterbox，Depth 采样跟随图像 UV，因此不会因为拉伸错位
+- 推理耗时：CPU×INT8 4 线程下 686×518 为 485.9ms，换 280×518（token 1813→740）后预期 ~200-260ms，待真机回填
+- 预处理 LUT + 预分配已做，但仍是 CPU 循环（280×518×3 ≈ 43.5 万元素）
+- 模型固定 280×518 拉伸输入；GL 渲染按源图宽高比 letterbox，Depth 采样跟随图像 UV，因此不会因为拉伸错位
 - 空洞内插（P0 的 inpaint）尚未移植到 GL；当前靠 CLAMP_TO_EDGE 拉伸，近景边缘可能有轻微涂抹
 - **OES 方向**：按 Grafika 约定推导（原始 `t=1` 对应视频顶部），部分机型/片源可能相反，故保留「上下翻转」开关而非硬编码
 - 视频旋转元数据（`KEY_ROTATION`）未处理：竖屏录制但带 90° 旋转标记的视频可能显示不正确，先用翻转开关兜底

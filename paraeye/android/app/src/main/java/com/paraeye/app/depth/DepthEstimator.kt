@@ -9,9 +9,12 @@ import com.google.ai.edge.litert.TensorBuffer
 /**
  * LiteRT 2.3.0 V2 CompiledModel 封装的 DA V2 Small 深度估算器（P3：支持实时帧流）。
  *
- * 模型：litert-community/depth-anything-v2-small
- * - INT8(dynamic wi8, afp32)：27.7MB，移动端首选
- * - FP32：99.5MB，精度基准
+ * 模型：P4 起改用**自导出**的 280×518 版本（社区原版只有 686×518）。
+ * - 量化与社区原版同款：AI Edge Quantizer dynamic_wi8_afp32
+ *   （int8 权重 + fp32 接口，float 进 float 出），27.6MB。
+ * - 换 280×518 的两个收益：竖屏视频不再被竖挤 2.35 倍（深度质量 corr
+ *   0.766 → 0.977），token 数 0.41 倍（推理约快 2 倍）。
+ * - FP32 精度基准模型已移除：它让 APK 从 28MB 涨到 128MB，收益不划算。
  *
  * 注意：GPU 路径使用 CompiledModel API（LiteRT V2 中 Interpreter + GpuDelegate 已不可用）。
  *
@@ -21,9 +24,9 @@ import com.google.ai.edge.litert.TensorBuffer
  */
 class DepthEstimator(private val context: Context) {
 
+    // 只剩单一模型：自导出的 280×518 INT8（FP32 版本会让 APK 翻 4.5 倍，已移除）
     enum class ModelType(val assetName: String, val label: String) {
-        INT8("models/depth_anything_v2_small_wi8_afp32.tflite", "INT8 (27.7MB)"),
-        FP32("models/depth_anything_v2_small.tflite", "FP32 (99.5MB)"),
+        INT8("models/dav2s_wi8_280x518.tflite", "INT8 280x518"),
     }
 
     data class DepthResult(
@@ -94,7 +97,7 @@ class DepthEstimator(private val context: Context) {
     }
 
     /**
-     * 单帧推理：直接吃 NCHW float（长度 3×518×686）。实时流水线主入口。
+     * 单帧推理：直接吃 NCHW float（长度 3×518×280）。实时流水线主入口。
      * 非线程安全 —— 调用方必须固定在同一线程（P3 用单线程 executor 保证）。
      */
     fun inferNchw(nchw: FloatArray): DepthResult {

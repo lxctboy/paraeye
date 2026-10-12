@@ -6,17 +6,19 @@ plugins {
 }
 
 /**
- * DA V2 Small LiteRT 模型下载（HuggingFace: litert-community/depth-anything-v2-small）
- * 模型文件 27~100MB，不进 Git，构建时按需下载到 assets/models/
+ * DA V2 Small LiteRT 模型下载。
+ *
+ * P4（2026-10-13）起改用**自导出**的 280×518 模型，来源是本仓库 export-tflite
+ * workflow 发布的滚动 release「models」：社区原版只有 686×518（会把竖屏视频
+ * 竖挤 2.35 倍），且自导出版量化方案与社区一致（AEQ dynamic_wi8_afp32）。
+ * 模型 27.6MB，不进 Git，构建时按需下载到 assets/models/。
  */
 val downloadDepthModels by tasks.registering {
-    description = "Download Depth Anything V2 Small LiteRT models from HuggingFace"
+    description = "Download ParaEye's self-exported DA V2 Small LiteRT model"
     val assetsDir = file("src/main/assets/models")
     val models = mapOf(
-        "depth_anything_v2_small_wi8_afp32.tflite" to
-            "https://huggingface.co/litert-community/depth-anything-v2-small/resolve/main/tflite/depth_anything_v2_small_wi8_afp32.tflite",
-        "depth_anything_v2_small.tflite" to
-            "https://huggingface.co/litert-community/depth-anything-v2-small/resolve/main/tflite/depth_anything_v2_small.tflite",
+        "dav2s_wi8_280x518.tflite" to
+            "https://github.com/lxctboy/paraeye/releases/download/models/dav2s_wi8_280x518.tflite",
     )
     outputs.dir(assetsDir)
     doLast {

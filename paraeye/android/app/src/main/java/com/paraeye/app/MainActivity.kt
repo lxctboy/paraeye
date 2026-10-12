@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
     /** 推理固定跑在单线程上（LiteRT CompiledModel 非线程安全，且这样天然串行） */
     private val inferExecutor = Executors.newSingleThreadExecutor()
 
-    /** 预分配 NCHW 输入（实时路径每帧复用，避免 4.3MB/帧 的分配） */
+    /** 预分配 NCHW 输入（实时路径每帧复用，280×518 下约 1.7MB/帧） */
     private val nchwBuf = FloatArray(3 * ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H)
 
     @Volatile private var inflight = false
@@ -137,12 +137,8 @@ class MainActivity : ComponentActivity() {
             useGpu = (id == R.id.radioGpu)
             onConfigChanged()
         }
-        modelGroup.setOnCheckedChangeListener { _, id ->
-            modelType = if (id == R.id.radioInt8) {
-                DepthEstimator.ModelType.INT8
-            } else {
-                DepthEstimator.ModelType.FP32
-            }
+        modelGroup.setOnCheckedChangeListener { _, _ ->
+            modelType = DepthEstimator.ModelType.INT8
             onConfigChanged()
         }
 

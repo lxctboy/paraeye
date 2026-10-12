@@ -9,11 +9,11 @@ class ImagePreprocessorTest {
 
     @Test
     fun modelInputContract() {
-        // 契约：litert-community/depth-anything-v2-small 的固定输入 [1, 3, 518, 686] NCHW
-        assertEquals(686, ImagePreprocessor.MODEL_W)
+        // 契约：P4 自导出模型的固定输入 [1, 3, 518, 280] NCHW（竖屏视频友好）
+        assertEquals(280, ImagePreprocessor.MODEL_W)
         assertEquals(518, ImagePreprocessor.MODEL_H)
         // 张量元素数 = 3 通道 × H × W（用算式而非写死的魔术数字）
-        assertEquals(3 * ImagePreprocessor.MODEL_H * ImagePreprocessor.MODEL_W, 1_066_044)
+        assertEquals(3 * ImagePreprocessor.MODEL_H * ImagePreprocessor.MODEL_W, 435_120)
     }
 
     @Test

@@ -155,7 +155,7 @@ void main() {
 }
 """
 
-        // ---- 降采样 pass：displayTex -> 模型分辨率 FBO(686x518) ----
+        // ---- 降采样 pass：displayTex -> 模型分辨率 FBO(280x518) ----
         // displayTex 的 row0 已是图像顶部（t=0）。glReadPixels 的 row0 是 FBO 底部
         // （NDC y=-1），所以要让 NDC y=-1 采到 t=0 → vUv.y = aPos.y*0.5 + 0.5。
         private const val DOWN_VERT = """
@@ -345,7 +345,8 @@ void main() {
         depthUploadBuf.clear()
         depthUploadBuf.put(depthR8)
         depthUploadBuf.position(0)
-        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1) // 宽度非 4 倍数时必须设为 1
+        // 保险：宽度非 4 的倍数时必须设为 1（280 已是 4 的倍数，但改尺寸时容易踩回这个坑）
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTex)
         GLES20.glTexImage2D(
             GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
