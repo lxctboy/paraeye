@@ -4,7 +4,7 @@ P1 目标：**Android 单帧推理跑通**——LiteRT GPU/CPU 上运行 Depth A
 
 ## 技术栈
 
-- Kotlin 2.0.21 / AGP 8.7.3 / Gradle 8.11.1，compileSdk 35，minSdk 26
+- Kotlin 2.4.20 / AGP 8.7.3 / Gradle 8.11.1，compileSdk 35，minSdk 26
 - 推理：**LiteRT 2.3.0 V2 CompiledModel API**（`com.google.ai.edge.litert:litert` + `litert-gpu`）
 - 模型：HuggingFace `litert-community/depth-anything-v2-small`（官方 LiteRT 导出）
   - INT8（dynamic wi8 / afp32，27.7MB）—— 移动端首选
