@@ -1,0 +1,22 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+输入: 720x1280@30.0  max_disp=11px (1.50%)
+Loading weights:   0%|          | 0/287 [00:00<?, ?it/s]Loading weights: 100%|██████████| 287/287 [00:00<00:00, 4924.28it/s]
+  frame 30: 平均推理 1196.9ms, 平均整帧 1274.2ms
+  frame 60: 平均推理 1243.7ms, 平均整帧 1321.1ms
+  frame 90: 平均推理 1245.6ms, 平均整帧 1322.2ms
+  frame 120: 平均推理 1232.3ms, 平均整帧 1307.8ms
+  frame 150: 平均推理 1226.8ms, 平均整帧 1301.5ms
+  frame 180: 平均推理 1221.9ms, 平均整帧 1296.3ms
+  frame 210: 平均推理 1220.8ms, 平均整帧 1294.9ms
+  frame 240: 平均推理 1229.2ms, 平均整帧 1303.4ms
+  frame 270: 平均推理 1239.2ms, 平均整帧 1313.7ms
+  frame 300: 平均推理 1247.2ms, 平均整帧 1322.0ms
+  frame 330: 平均推理 1263.6ms, 平均整帧 1339.3ms
+  frame 360: 平均推理 1265.9ms, 平均整帧 1341.7ms
+  frame 390: 平均推理 1256.7ms, 平均整帧 1332.3ms
+  frame 420: 平均推理 1248.0ms, 平均整帧 1323.5ms
+  frame 450: 平均推理 1244.4ms, 平均整帧 1319.8ms
+  frame 480: 平均推理 1235.1ms, 平均整帧 1310.0ms
+  frame 510: 平均推理 1227.7ms, 平均整帧 1302.3ms
+完成: 523 帧 → sbs_real_150.mp4
+  平均推理 1224.7ms/帧 | 整帧 1299.0ms/帧 | 等效 0.8 FPS

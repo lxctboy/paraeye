@@ -1,0 +1,25 @@
+# ---- Gradle / Android ----
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- 模型文件（不进 Git，构建时由 downloadDepthModels 从 HuggingFace 下载）----
+*.tflite
+*.litertlm
+paraeye/android/app/src/main/assets/models/
+
+# ---- P0 产物（大文件，按需保留）----
+*.mp4
+paraeye/p0/__pycache__/
+
+# ---- 工作区记忆/本地数据（不进仓库）----
+.workbuddy/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
