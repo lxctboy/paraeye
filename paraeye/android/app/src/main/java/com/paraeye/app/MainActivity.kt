@@ -3,10 +3,12 @@ package com.paraeye.app
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.widget.Button
-import android.widget.ImageView
+import android.widget.CheckBox
 import android.widget.RadioGroup
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
@@ -15,20 +17,23 @@ import androidx.lifecycle.lifecycleScope
 import com.paraeye.app.depth.DepthBenchmark
 import com.paraeye.app.depth.DepthEstimator
 import com.paraeye.app.depth.DepthVisualizer
+import com.paraeye.app.gl.SbsRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * ParaEye P1 单帧推理验证：选图 → LiteRT 推理 → 深度图 + 耗时基准。
- * P2 起替换为 GL 视图合成流水线。
+ * ParaEye P1 + P2 验证：选图 → LiteRT 深度推理 → GL 视图合成（Full-SBS / 伪彩深度）。
+ * 视差滑块可实时调节，用于复现 P0 的参数扫描；真机动作在这儿完成。
+ * P3 起把「选静态图」替换为「相机/视频帧流」。
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
-    private lateinit var sourceImage: ImageView
-    private lateinit var depthImage: ImageView
+    private lateinit var dispLabel: TextView
+    private lateinit var glView: GLSurfaceView
+    private lateinit var renderer: SbsRenderer
     private lateinit var acceleratorGroup: RadioGroup
     private lateinit var modelGroup: RadioGroup
     private lateinit var runButton: Button
@@ -47,18 +52,65 @@ class MainActivity : ComponentActivity() {
 
         statusText = findViewById(R.id.statusText)
         statsText = findViewById(R.id.statsText)
-        sourceImage = findViewById(R.id.sourceImage)
-        depthImage = findViewById(R.id.depthImage)
+        dispLabel = findViewById(R.id.dispLabel)
         acceleratorGroup = findViewById(R.id.acceleratorGroup)
         modelGroup = findViewById(R.id.modelGroup)
         runButton = findViewById(R.id.runButton)
+        glView = findViewById(R.id.glView)
+
+        renderer = SbsRenderer()
+        glView.setEGLContextClientVersion(2)
+        glView.setRenderer(renderer)
+        glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
         findViewById<Button>(R.id.pickButton).setOnClickListener {
             pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
-        runButton.setOnClickListener { runBenchmark() }
+        runButton.setOnClickListener { runGeneration() }
 
-        statusText.text = "选择一张图片，然后运行基准（首次加载模型约需数秒）"
+        val seek = findViewById<SeekBar>(R.id.dispSeek)
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                val ratio = progress / 1000f
+                renderer.maxDispRatio = ratio
+                dispLabel.text = "当前：%.1f%%%s".format(
+                    ratio * 100f,
+                    if (progress == 10) "（P0 定档，默认）" else ""
+                )
+                glView.requestRender()
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) = Unit
+            override fun onStopTrackingTouch(sb: SeekBar?) = Unit
+        })
+
+        findViewById<RadioGroup>(R.id.viewModeGroup)
+            .setOnCheckedChangeListener { _, checkedId ->
+                renderer.mode = if (checkedId == R.id.radioModeSbs) {
+                    SbsRenderer.MODE_SBS
+                } else {
+                    SbsRenderer.MODE_DEPTH
+                }
+                glView.requestRender()
+            }
+
+        findViewById<CheckBox>(R.id.swapCheck)
+            .setOnCheckedChangeListener { _, isChecked ->
+                renderer.swapLr = isChecked
+                glView.requestRender()
+            }
+
+        statusText.text = "选择一张图片 → 生成 3D。SBS 请用平行眼观看（或用 VR 盒子）"
+    }
+
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+    }
+
+    override fun onPause() {
+        glView.onPause()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -76,8 +128,7 @@ class MainActivity : ComponentActivity() {
             }
             // 大图降采样到 2048 长边，避免 OOM
             currentBitmap = downscale(raw, 2048)
-            sourceImage.setImageBitmap(currentBitmap)
-            statusText.text = "已加载图片 ${currentBitmap!!.width}x${currentBitmap!!.height}"
+            statusText.text = "已加载图片 ${currentBitmap!!.width}x${currentBitmap!!.height}，点「生成 3D」"
         } catch (e: Exception) {
             statusText.text = "加载失败: ${e.message}"
         }
@@ -92,7 +143,7 @@ class MainActivity : ComponentActivity() {
         return Bitmap.createScaledBitmap(bitmap, (w * scale).toInt(), (h * scale).toInt(), true)
     }
 
-    private fun runBenchmark() {
+    private fun runGeneration() {
         val bitmap = currentBitmap ?: run {
             statusText.text = "请先选择图片"
             return
@@ -107,27 +158,31 @@ class MainActivity : ComponentActivity() {
 
         busy = true
         runButton.isEnabled = false
-        statusText.text = "加载模型 ${modelType.label} (${if (useGpu) "GPU" else "CPU"}) ..."
+        statusText.text = "推理中（${modelType.label} / ${if (useGpu) "GPU" else "CPU"}）..."
 
         lifecycleScope.launch {
             try {
-                val (depth, bench) = withContext(Dispatchers.Default) {
+                val (result, bench) = withContext(Dispatchers.Default) {
                     val est = estimator ?: DepthEstimator(this@MainActivity).also { estimator = it }
-                    val ok = est.ensureLoaded(modelType, useGpu)
-                    if (!ok) error("模型加载失败（GPU 不受支持时请改用 CPU）")
-                    val result = est.infer(bitmap)
+                    if (!est.ensureLoaded(modelType, useGpu)) {
+                        error("模型加载失败（GPU 不受支持时请改用 CPU）")
+                    }
+                    val depth = est.infer(bitmap)
                     val b = DepthBenchmark.run(est, bitmap)
-                    result to b
+                    depth to b
                 }
-                val bmp = DepthVisualizer.toBitmap(depth.depth, depth.width, depth.height)
-                depthImage.setImageBitmap(bmp)
+                // 深度归一化 → 单通道 8bit → 交给 GL 渲染 SBS / 伪彩深度
+                val r8 = SbsRenderer.depthToR8(DepthVisualizer.normalize(result.depth))
+                renderer.submitFrame(bitmap, r8, result.width, result.height)
+                glView.requestRender()
+
                 statsText.text = buildString {
                     appendLine("模型: ${modelType.label}  |  加速: ${if (useGpu) "GPU" else "CPU"}")
                     appendLine("迭代 ${bench.iterations} 次（含预热 3 次）")
                     appendLine("平均: %.1f ms (%.1f FPS)".format(bench.avgMs, bench.fps))
                     appendLine("min: %.1f ms | p50: %.1f ms | max: %.1f ms".format(bench.minMs, bench.p50Ms, bench.maxMs))
                 }
-                statusText.text = "完成"
+                statusText.text = "完成 · SBS 已渲染，滑块可实时调视差"
             } catch (e: Exception) {
                 statusText.text = "失败: ${e.message}"
             } finally {

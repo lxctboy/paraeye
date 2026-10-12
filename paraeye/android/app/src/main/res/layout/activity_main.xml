@@ -23,14 +23,6 @@
             android:layout_marginTop="8dp"
             android:text="1. 选择图片" />
 
-        <ImageView
-            android:id="@+id/sourceImage"
-            android:layout_width="match_parent"
-            android:layout_height="180dp"
-            android:layout_marginTop="8dp"
-            android:contentDescription="原图"
-            android:scaleType="fitCenter" />
-
         <RadioGroup
             android:id="@+id/acceleratorGroup"
             android:layout_width="match_parent"
@@ -80,15 +72,62 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="2. 运行推理基准" />
+            android:text="2. 生成 3D（推理 + 计时）" />
 
-        <ImageView
-            android:id="@+id/depthImage"
+        <TextView
             android:layout_width="match_parent"
-            android:layout_height="220dp"
-            android:layout_marginTop="8dp"
-            android:contentDescription="深度图"
-            android:scaleType="fitCenter" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="视差强度（总视差占宽度比例）"
+            android:textSize="13sp" />
+
+        <SeekBar
+            android:id="@+id/dispSeek"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="30"
+            android:progress="10" />
+
+        <TextView
+            android:id="@+id/dispLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="当前：1.0%（P0 定档，默认）"
+            android:textSize="13sp" />
+
+        <RadioGroup
+            android:id="@+id/viewModeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/radioModeDepth"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="深度图" />
+
+            <RadioButton
+                android:id="@+id/radioModeSbs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:checked="true"
+                android:text="SBS 3D" />
+        </RadioGroup>
+
+        <CheckBox
+            android:id="@+id/swapCheck"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="左右交换（交叉眼观看时用）" />
+
+        <android.opengl.GLSurfaceView
+            android:id="@+id/glView"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:layout_marginTop="8dp" />
 
         <TextView
             android:id="@+id/statusText"
