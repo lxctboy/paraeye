@@ -1,0 +1,55 @@
+name: export-tflite
+
+# P4：把 DA V2 Small 重导出为更小输入分辨率的 INT8 tflite（litert-torch 仅 Linux/macOS）。
+# 触发：push 改动导出脚本 / workflow 本身，或手动 dispatch。
+# 产物：artifact + 滚动 release「models」（Android 构建从该 release URL 下载模型）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      sizes:
+        description: "输入尺寸 WxH，逗号分隔（必须被 14 整除）"
+        required: false
+        default: "686x518,392x518,280x518"
+  push:
+    paths:
+      - "paraeye/p4/export_tflite.py"
+      - ".github/workflows/export-tflite.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps（torch 必须 <2.14：litert-torch 的上限约束；走 CPU index 免 CUDA）
+        run: |
+          pip install "torch<2.14" --index-url https://download.pytorch.org/whl/cpu
+          pip install litert-torch transformers
+
+      - name: Export tflite
+        run: |
+          SIZES="${{ inputs.sizes || '686x518,392x518,280x518' }}"
+          python paraeye/p4/export_tflite.py --sizes "$SIZES" --out-dir out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tflite-models
+          path: out/*.tflite
+
+      - name: Publish to rolling release "models"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create models out/*.tflite \
+            --repo ${{ github.repository }} \
+            --title "ParaEye models (rolling)" \
+            --notes "DA V2 Small INT8 tflite，由 export-tflite workflow 自动生成。Android 构建从此 release 下载模型。" \
+            2>/dev/null || gh release upload models out/*.tflite --repo ${{ github.repository }} --clobber
