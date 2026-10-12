@@ -9,6 +9,7 @@ import android.widget.ImageView
 import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import com.paraeye.app.depth.DepthBenchmark
@@ -53,7 +54,7 @@ class MainActivity : ComponentActivity() {
         runButton = findViewById(R.id.runButton)
 
         findViewById<Button>(R.id.pickButton).setOnClickListener {
-            pickImage.launch(ActivityResultContracts.PickVisualMedia.Request("image/*"))
+            pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
         runButton.setOnClickListener { runBenchmark() }
 
