@@ -44,6 +44,31 @@ object ImagePreprocessor {
         return out
     }
 
+    /**
+     * 纯函数：glReadPixels 得到的 RGBA8 字节流 -> NCHW float。
+     * 用于 P3 视频流水线：GPU 已把帧降采样到 686x518 并写入 FBO，
+     * 这里跳过 Bitmap，直接从像素缓冲构造模型输入（省掉一次 IntArray 转换与 setPixels）。
+     *
+     * 前置条件：rgba 的行 0 必须是**图像顶部**（GL readPixels 默认行 0 是 FBO 底部，
+     * 由 SbsRenderer 的降采样 pass 用 aPos.y*0.5+0.5 翻转修正）。
+     */
+    fun rgbaToNchw(rgba: ByteArray, width: Int, height: Int): FloatArray {
+        val n = width * height
+        require(rgba.size >= n * 4) { "rgba 缓冲区过小：${rgba.size} < ${n * 4}" }
+        val out = FloatArray(3 * n)
+        var p = 0
+        for (i in 0 until n) {
+            val r = rgba[p].toInt() and 0xFF
+            val g = rgba[p + 1].toInt() and 0xFF
+            val b = rgba[p + 2].toInt() and 0xFF
+            p += 4
+            out[i] = normalize(r, 0)
+            out[n + i] = normalize(g, 1)
+            out[2 * n + i] = normalize(b, 2)
+        }
+        return out
+    }
+
     /** 纯函数：单通道归一化（JVM 单测直接覆盖） */
     fun normalize(value8bit: Int, channel: Int): Float =
         (value8bit / 255f - MEAN[channel]) / STD[channel]

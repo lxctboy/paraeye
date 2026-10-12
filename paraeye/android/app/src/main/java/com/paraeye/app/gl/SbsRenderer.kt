@@ -1,29 +1,54 @@
 package com.paraeye.app.gl
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
+import android.net.Uri
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
-import android.opengl.GLUtils
 import android.opengl.GLSurfaceView
+import android.opengl.GLUtils
+import android.os.Handler
+import android.os.Looper
+import com.paraeye.app.depth.ImagePreprocessor
+import com.paraeye.app.video.VideoDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * ParaEye P2：GPU 视图合成渲染器（OpenGL ES 2.0，兼容性优先）。
+ * GL 帧深度消费者：由上层注入。
  *
- * 输入：源 RGB 纹理 + 深度纹理（单通道 8bit，行优先，row0 = 图像顶部）
+ * onFrameForDepth 在 **GL 线程** 被调用，实现方必须在返回前把数据拷走
+ * （本渲染器会复用 rgba 缓冲区），随后在自有线程上完成推理并回调 submitDepth。
+ */
+interface FrameDepthConsumer {
+    val busy: Boolean
+    fun onFrameForDepth(rgba: ByteArray)
+}
+
+/**
+ * ParaEye P2 + P3：GPU 视图合成渲染器（OpenGL ES 2.0，兼容性优先）。
+ *
+ * 数据源（二选一）：
+ *  - 静态 Bitmap（P2 验证路径）
+ *  - 本地视频（P3）：MediaCodec 硬解 → SurfaceTexture(OES) → [归一化 pass] → displayTex
+ *
  * 输出：
- *  - MODE_DEPTH：伪彩深度图（红=近，蓝=远，与 DepthVisualizer 一致）
+ *  - MODE_DEPTH：伪彩深度图（红=近，蓝=远）
  *  - MODE_SBS ：Full-SBS（左半=左眼，右半=右眼）
  *
  * 符号约定与 P0 `paraeye/p0/synthesize.py` **保持一致**（已数值验证）：
  *   深度 d ∈ [0,1]，1=近；总视差 = d × maxDispRatio（以图像宽度的比例计）
- *   左眼反向采样 I_L(u) = I(u - dis/2)  → 内容右移
- *   右眼反向采样 I_R(u) = I(u + dis/2)  → 内容左移
+ *   左眼反向采样 I_L(u) = I(u - dis/2)，右眼 I_R(u) = I(u + dis/2)
  *   ⇒ 近景左眼图在右、右眼图在左 = 出屏（平行眼观看时近物浮现）
- * 由于位移以「图像宽度比例」表达，转 UV 后与分辨率无关，故 Shader 内只需一个标量 shift。
+ * 位移以「图像宽度比例」表达，转 UV 后与分辨率无关，故 Shader 内只需一个标量 shift。
+ *
+ * 纹理坐标总约定：**displayTex / depthTex 的行 0 = 图像顶部**（与 GLUtils.texImage2D
+ * 上传 Bitmap 的布局一致）。GL 帧缓冲原点在左下，
+ * 故所有「渲染到 FBO」的 pass 都要用 aPos.y*0.5+0.5 再翻一次（详见 DOWN_VERT 注释）。
  */
 class SbsRenderer : GLSurfaceView.Renderer {
 
@@ -41,11 +66,12 @@ class SbsRenderer : GLSurfaceView.Renderer {
             return out
         }
 
+        // ---- 主 pass：视图合成 / 伪彩深度 ----
+        // y 取反：GL 纹理 row0 对应图像顶部，而 NDC y=-1 在屏幕底部
         private const val VERT = """
 attribute vec2 aPos;
 varying vec2 vUv;
 void main() {
-    // y 取反：GL 纹理 row0 对应图像顶部，而 NDC y=-1 在屏幕底部
     vUv = vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5);
     gl_Position = vec4(aPos, 0.0, 1.0);
 }
@@ -91,34 +117,113 @@ void main() {
     }
 }
 """
+
+        // ---- 归一化 pass：OES(视频) -> displayTex ----
+        // 依据 Grafika 约定：原始 t=1 对应视频顶部（t = aPos.y*0.5+0.5 时画面正立）。
+        // 我们要让 displayTex 的 row0（= FBO y=0 = NDC y=-1）是视频顶部，
+        // 故 t 取 0.5 - aPos.y*0.5；uFlip=1 时切换为另一方向（部分机型/片源方向相反）。
+        private const val OES_VERT = """
+attribute vec2 aPos;
+uniform mat4 uTexMtx;
+uniform float uFlip;
+varying vec2 vUv;
+void main() {
+    float t = mix(0.5 - aPos.y * 0.5, aPos.y * 0.5 + 0.5, uFlip);
+    vUv = (uTexMtx * vec4(aPos.x * 0.5 + 0.5, t, 0.0, 1.0)).xy;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+"""
+
+        private const val OES_FRAG = """
+#extension GL_OES_EGL_image_external : require
+precision mediump float;
+uniform samplerExternalOES uSrc;
+varying vec2 vUv;
+void main() {
+    gl_FragColor = vec4(texture2D(uSrc, vUv).rgb, 1.0);
+}
+"""
+
+        // ---- 降采样 pass：displayTex -> 模型分辨率 FBO(686x518) ----
+        // displayTex 的 row0 已是图像顶部（t=0）。glReadPixels 的 row0 是 FBO 底部
+        // （NDC y=-1），所以要让 NDC y=-1 采到 t=0 → vUv.y = aPos.y*0.5 + 0.5。
+        private const val DOWN_VERT = """
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+    vUv = vec2(aPos.x * 0.5 + 0.5, aPos.y * 0.5 + 0.5);
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+"""
+
+        private const val DOWN_FRAG = """
+precision mediump float;
+uniform sampler2D uSrc;
+varying vec2 vUv;
+void main() {
+    gl_FragColor = vec4(texture2D(uSrc, vUv).rgb, 1.0);
+}
+"""
     }
 
     // ---- 以下字段由 UI 线程写入，GL 线程读取 ----
     @Volatile var maxDispRatio = 0.01f   // P0 定档：总视差 1% 图像宽度
     @Volatile var mode: Int = MODE_SBS
     @Volatile var swapLr = false
+    @Volatile var videoFlipY = false
+
+    /** 深度消费者（Activity 注入） */
+    @Volatile var depthConsumer: FrameDepthConsumer? = null
+
+    /** 由 Activity 设置，用于在异步推理完成后请求重绘 */
+    var requestRender: (() -> Unit)? = null
+    var onVideoError: ((String) -> Unit)? = null
+    var onVideoStarted: ((Int, Int, Long) -> Unit)? = null
+
+    // ---- 统计（UI 线程轮询）----
+    @Volatile var videoFps = 0f
+    @Volatile var depthFps = 0f
 
     @Volatile private var pendingBitmap: Bitmap? = null
     @Volatile private var pendingDepth: ByteArray? = null
-    @Volatile private var pendingDepthW = 0
-    @Volatile private var pendingDepthH = 0
 
     private var surfaceW = 1
     private var surfaceH = 1
-    private var imgW = 1
-    private var imgH = 1
+    private var srcW = 1
+    private var srcH = 1
 
+    // ---- GL 资源 ----
     private var program = 0
-    private var colorTex = 0
+    private var oesProgram = 0
+    private var downProgram = 0
+
+    private var displayTex = 0
+    private var displayFbo = 0
     private var depthTex = 0
+    private var modelTex = 0
+    private var modelFbo = 0
+    private var videoTex = 0
+    private var videoST: SurfaceTexture? = null
+    private var videoDecoder: VideoDecoder? = null
+    private val texMtx = FloatArray(16)
+    private val frameAvailable = AtomicBoolean(false)
+
     private var hasColor = false
     private var hasDepth = false
 
-    private val quadBuffer: FloatBuffer = ByteBuffer.allocateDirect(4 * 2 * 4)
-        .order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
-            put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
-            position(0)
-        }
+    private val readBuf: ByteBuffer = ByteBuffer
+        .allocateDirect(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H * 4)
+        .order(ByteOrder.nativeOrder())
+    private val readBytes = ByteArray(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H * 4)
+
+    // ---- 统计窗口 ----
+    private var windowStartMs = 0L
+    private var videoFrames = 0
+    private var depthFrames = 0
+    @Volatile private var videoInfoSent = false
+
+    @Volatile private var pendingStart: Pair<Context, Uri>? = null
+    @Volatile private var pendingStop = false
 
     private var uColor = 0
     private var uDepth = 0
@@ -128,103 +233,59 @@ void main() {
     private var uMode = 0
     private var aPos = 0
 
-    /** 提交一帧结果（占位像素 r8 深度 + 源图），线程安全 */
-    fun submitFrame(bitmap: Bitmap, depthR8: ByteArray, depthW: Int, depthH: Int) {
+    private var aOesPos = 0
+    private var uOesSrc = 0
+    private var uOesMtx = 0
+    private var uOesFlip = 0
+
+    private var aDownPos = 0
+    private var uDownSrc = 0
+
+    // ---------------- 对外 API ----------------
+
+    /** 静态图路径（P2）：提交源图 + 深度 */
+    fun submitFrame(bitmap: Bitmap, depthR8: ByteArray) {
         pendingBitmap = bitmap
         pendingDepth = depthR8
-        pendingDepthW = depthW
-        pendingDepthH = depthH
     }
 
-    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        program = buildProgram(VERT, FRAG)
-        aPos = GLES20.glGetAttribLocation(program, "aPos")
-        uColor = GLES20.glGetUniformLocation(program, "uColor")
-        uDepth = GLES20.glGetUniformLocation(program, "uDepth")
-        uFit = GLES20.glGetUniformLocation(program, "uFit")
-        uShift = GLES20.glGetUniformLocation(program, "uShift")
-        uSide = GLES20.glGetUniformLocation(program, "uSide")
-        uMode = GLES20.glGetUniformLocation(program, "uMode")
-        colorTex = createTexture()
-        depthTex = createTexture()
-        hasColor = false
-        hasDepth = false
+    /** 视频路径（P3）：提交深度（尺寸恒为 MODEL_W x MODEL_H），线程安全 */
+    fun submitDepth(depthR8: ByteArray) {
+        pendingDepth = depthR8
+        depthFrames++
+        requestRender?.invoke()
     }
 
-    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-        surfaceW = width.coerceAtLeast(1)
-        surfaceH = height.coerceAtLeast(1)
+    fun startVideo(context: Context, uri: Uri) {
+        pendingStop = false
+        pendingStart = context.applicationContext to uri
     }
 
-    override fun onDrawFrame(gl: GL10?) {
-        uploadPending()
-        GLES20.glViewport(0, 0, surfaceW, surfaceH)
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        if (!hasColor || !hasDepth) return
-
-        GLES20.glUseProgram(program)
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, colorTex)
-        GLES20.glUniform1i(uColor, 0)
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTex)
-        GLES20.glUniform1i(uDepth, 1)
-
-        GLES20.glUniform1f(uShift, maxDispRatio * 0.5f)
-        GLES20.glEnableVertexAttribArray(aPos)
-        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, quadBuffer)
-
-        if (mode == MODE_SBS) {
-            val half = surfaceW / 2
-            // swapLr：交叉眼观看时交换左右顺序
-            val leftX = if (swapLr) half else 0
-            val rightX = if (swapLr) 0 else half
-            drawView(leftX, 0, half, surfaceH, -1f, MODE_SBS)
-            drawView(rightX, 0, half, surfaceH, 1f, MODE_SBS)
-        } else {
-            drawView(0, 0, surfaceW, surfaceH, -1f, MODE_DEPTH)
-        }
-
-        GLES20.glDisableVertexAttribArray(aPos)
+    fun stopVideo() {
+        pendingStart = null
+        pendingStop = true
     }
 
-    private fun drawView(x: Int, y: Int, w: Int, h: Int, side: Float, modeNow: Int) {
-        if (w <= 0 || h <= 0) return
-        GLES20.glViewport(x, y, w, h)
-        val (fx, fy) = fitScale(w, h)
-        GLES20.glUniform2f(uFit, fx, fy)
-        GLES20.glUniform1f(uSide, side)
-        GLES20.glUniform1f(uMode, modeNow.toFloat())
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    fun setPaused(paused: Boolean) {
+        videoDecoder?.paused = paused
     }
 
-    /** contain 模式：保持源图宽高比，黑边填充 */
-    private fun fitScale(viewW: Int, viewH: Int): Pair<Float, Float> {
-        val viewAspect = viewW.toFloat() / viewH.toFloat()
-        val imgAspect = imgW.toFloat() / imgH.toFloat()
-        return if (viewAspect > imgAspect) {
-            Pair(viewAspect / imgAspect, 1f)   // 视口更宽 → 高度撑满
-        } else {
-            Pair(1f, imgAspect / viewAspect)   // 视口更高 → 宽度撑满
-        }
-    }
+    val isVideoActive: Boolean get() = videoDecoder != null
 
+    /** GL 线程：上传 UI 线程提交的数据 */
     private fun uploadPending() {
         pendingBitmap?.let { bmp ->
-            imgW = bmp.width
-            imgH = bmp.height
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, colorTex)
+            srcW = bmp.width
+            srcH = bmp.height
+            ensureDisplayTex(srcW, srcH)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, displayTex)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
             hasColor = true
             pendingBitmap = null
         }
         pendingDepth?.let { buf ->
-            val w = pendingDepthW
-            val h = pendingDepthH
+            val w = ImagePreprocessor.MODEL_W
+            val h = ImagePreprocessor.MODEL_H
             val data = ByteBuffer.allocateDirect(buf.size).order(ByteOrder.nativeOrder()).apply {
                 put(buf); position(0)
             }
@@ -239,48 +300,252 @@ void main() {
         }
     }
 
-    private fun createTexture(): Int {
-        val ids = IntArray(1)
-        GLES20.glGenTextures(1, ids, 0)
-        val id = ids[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        // 边缘采样等价 P0 的 BORDER_REPLICATE
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        return id
+    // ---------------- Renderer ----------------
+
+    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+
+        program = GlUtil.buildProgram(VERT, FRAG)
+        aPos = GLES20.glGetAttribLocation(program, "aPos")
+        uColor = GLES20.glGetUniformLocation(program, "uColor")
+        uDepth = GLES20.glGetUniformLocation(program, "uDepth")
+        uFit = GLES20.glGetUniformLocation(program, "uFit")
+        uShift = GLES20.glGetUniformLocation(program, "uShift")
+        uSide = GLES20.glGetUniformLocation(program, "uSide")
+        uMode = GLES20.glGetUniformLocation(program, "uMode")
+
+        oesProgram = GlUtil.buildProgram(OES_VERT, OES_FRAG)
+        aOesPos = GLES20.glGetAttribLocation(oesProgram, "aPos")
+        uOesSrc = GLES20.glGetUniformLocation(oesProgram, "uSrc")
+        uOesMtx = GLES20.glGetUniformLocation(oesProgram, "uTexMtx")
+        uOesFlip = GLES20.glGetUniformLocation(oesProgram, "uFlip")
+
+        downProgram = GlUtil.buildProgram(DOWN_VERT, DOWN_FRAG)
+        aDownPos = GLES20.glGetAttribLocation(downProgram, "aPos")
+        uDownSrc = GLES20.glGetUniformLocation(downProgram, "uSrc")
+
+        displayTex = GlUtil.createTexture2d()
+        depthTex = GlUtil.createTexture2d()
+
+        // 模型分辨率 FBO：承接降采样结果，供 readPixels 读取
+        modelTex = GlUtil.allocTexture2d(ImagePreprocessor.MODEL_W, ImagePreprocessor.MODEL_H)
+        modelFbo = GlUtil.createFramebuffer(modelTex)
+
+        // OES 纹理 + SurfaceTexture：视频/相机的统一入口
+        videoTex = GlUtil.createOesTexture()
+        videoST = SurfaceTexture(videoTex).apply {
+            setOnFrameAvailableListener({ frameAvailable.set(true) }, Handler(Looper.getMainLooper()))
+        }
+
+        hasColor = false
+        hasDepth = false
+        windowStartMs = System.currentTimeMillis()
     }
 
-    private fun compile(type: Int, src: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, src)
-        GLES20.glCompileShader(shader)
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetShaderInfoLog(shader)
-            GLES20.glDeleteShader(shader)
-            error("shader compile failed: $log")
-        }
-        return shader
+    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        surfaceW = width.coerceAtLeast(1)
+        surfaceH = height.coerceAtLeast(1)
     }
 
-    private fun buildProgram(vs: String, fs: String): Int {
-        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
-        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
-        val p = GLES20.glCreateProgram()
-        GLES20.glAttachShader(p, v)
-        GLES20.glAttachShader(p, f)
-        GLES20.glLinkProgram(p)
-        val status = IntArray(1)
-        GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetProgramInfoLog(p)
-            error("program link failed: $log")
+    override fun onDrawFrame(gl: GL10?) {
+        handleVideoCommands()
+        val newVideoFrame = consumeVideoFrame()
+        uploadPending()
+
+        if (newVideoFrame && hasColor && modelFbo != 0) {
+            val consumer = depthConsumer
+            if (consumer != null && !consumer.busy) {
+                dispatchDepthFrame(consumer)
+            }
         }
-        GLES20.glDeleteShader(v)
-        GLES20.glDeleteShader(f)
-        return p
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, surfaceW, surfaceH)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        if (!hasColor || !hasDepth) {
+            updateStats(false)
+            return
+        }
+
+        GLES20.glUseProgram(program)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, displayTex)
+        GLES20.glUniform1i(uColor, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTex)
+        GLES20.glUniform1i(uDepth, 1)
+
+        GLES20.glUniform1f(uShift, maxDispRatio * 0.5f)
+        GLES20.glEnableVertexAttribArray(aPos)
+        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, GlUtil.QUAD)
+
+        if (mode == MODE_SBS) {
+            val half = surfaceW / 2
+            // swapLr：交叉眼观看时交换左右顺序
+            val leftX = if (swapLr) half else 0
+            val rightX = if (swapLr) 0 else half
+            drawView(leftX, 0, half, surfaceH, -1f, MODE_SBS)
+            drawView(rightX, 0, half, surfaceH, 1f, MODE_SBS)
+        } else {
+            drawView(0, 0, surfaceW, surfaceH, -1f, MODE_DEPTH)
+        }
+
+        GLES20.glDisableVertexAttribArray(aPos)
+        updateStats(newVideoFrame)
+    }
+
+    // ---------------- 视频路径 ----------------
+
+    private fun handleVideoCommands() {
+        if (pendingStop) {
+            pendingStop = false
+            videoDecoder?.release()
+            videoDecoder = null
+            videoInfoSent = false
+            hasColor = false
+            hasDepth = false
+        }
+        pendingStart?.let { (ctx, uri) ->
+            pendingStart = null
+            videoDecoder?.release()
+            val st = videoST ?: return
+            videoInfoSent = false
+            videoDecoder = VideoDecoder(
+                context = ctx,
+                uri = uri,
+                surfaceTexture = st,
+                onFrame = { frameAvailable.set(true) },
+                onError = { msg -> mainPost { onVideoError?.invoke(msg) } },
+            ).also { it.start() }
+        }
+    }
+
+    /** 有新视频帧则归一化到 displayTex，返回是否是新帧 */
+    private fun consumeVideoFrame(): Boolean {
+        val decoder = videoDecoder ?: return false
+        val st = videoST ?: return false
+        if (!frameAvailable.compareAndSet(true, false)) return false
+
+        runCatching { st.updateTexImage() }.getOrElse { return false }
+        st.getTransformMatrix(texMtx)
+
+        val w = decoder.videoWidth
+        val h = decoder.videoHeight
+        if (w <= 0 || h <= 0) return false
+        if (w != srcW || h != srcH || displayFbo == 0) {
+            srcW = w
+            srcH = h
+            ensureDisplayTex(w, h)
+        }
+        if (displayFbo == 0) return false   // FBO 创建失败（驱动不支持），放弃视频路径
+        if (!videoInfoSent) {
+            videoInfoSent = true
+            val dur = decoder.durationUs
+            mainPost { onVideoStarted?.invoke(w, h, dur) }
+        }
+
+        // OES -> displayTex
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, displayFbo)
+        GLES20.glViewport(0, 0, srcW, srcH)
+        GLES20.glUseProgram(oesProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex)
+        GLES20.glUniform1i(uOesSrc, 0)
+        GLES20.glUniformMatrix4fv(uOesMtx, 1, false, texMtx, 0)
+        GLES20.glUniform1f(uOesFlip, if (videoFlipY) 1f else 0f)
+        GLES20.glEnableVertexAttribArray(aOesPos)
+        GLES20.glVertexAttribPointer(aOesPos, 2, GLES20.GL_FLOAT, false, 0, GlUtil.QUAD)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(aOesPos)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
+        hasColor = true
+        return true
+    }
+
+    /** displayTex -> 模型分辨率 FBO -> readPixels -> 交给消费者 */
+    private fun dispatchDepthFrame(consumer: FrameDepthConsumer) {
+        val w = ImagePreprocessor.MODEL_W
+        val h = ImagePreprocessor.MODEL_H
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, modelFbo)
+        GLES20.glViewport(0, 0, w, h)
+        GLES20.glUseProgram(downProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, displayTex)
+        GLES20.glUniform1i(uDownSrc, 0)
+        GLES20.glEnableVertexAttribArray(aDownPos)
+        GLES20.glVertexAttribPointer(aDownPos, 2, GLES20.GL_FLOAT, false, 0, GlUtil.QUAD)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(aDownPos)
+
+        readBuf.position(0)
+        GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readBuf)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        readBuf.position(0)
+        readBuf.get(readBytes)
+        consumer.onFrameForDepth(readBytes)
+    }
+
+    private fun ensureDisplayTex(w: Int, h: Int) {
+        if (displayFbo != 0) {
+            GLES20.glDeleteFramebuffers(1, intArrayOf(displayFbo), 0)
+            displayFbo = 0
+        }
+        if (displayTex != 0) {
+            GLES20.glDeleteTextures(1, intArrayOf(displayTex), 0)
+        }
+        displayTex = GlUtil.allocTexture2d(w, h)
+        displayFbo = GlUtil.createFramebuffer(displayTex)
+    }
+
+    // ---------------- 绘制与统计 ----------------
+
+    private fun drawView(x: Int, y: Int, w: Int, h: Int, side: Float, modeNow: Int) {
+        if (w <= 0 || h <= 0) return
+        GLES20.glViewport(x, y, w, h)
+        val (fx, fy) = fitScale(w, h)
+        GLES20.glUniform2f(uFit, fx, fy)
+        GLES20.glUniform1f(uSide, side)
+        GLES20.glUniform1f(uMode, modeNow.toFloat())
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    /** contain 模式：保持源图宽高比，黑边填充 */
+    private fun fitScale(viewW: Int, viewH: Int): Pair<Float, Float> {
+        val viewAspect = viewW.toFloat() / viewH.toFloat()
+        val imgAspect = srcW.toFloat() / srcH.toFloat()
+        return if (viewAspect > imgAspect) {
+            Pair(viewAspect / imgAspect, 1f)   // 视口更宽 → 高度撑满
+        } else {
+            Pair(1f, imgAspect / viewAspect)   // 视口更高 → 宽度撑满
+        }
+    }
+
+    private fun updateStats(newVideoFrame: Boolean) {
+        if (newVideoFrame) videoFrames++
+        val now = System.currentTimeMillis()
+        val elapsed = now - windowStartMs
+        if (elapsed >= 500) {
+            videoFps = videoFrames * 1000f / elapsed
+            depthFps = depthFrames * 1000f / elapsed
+            windowStartMs = now
+            videoFrames = 0
+            depthFrames = 0
+        }
+    }
+
+    private fun mainPost(block: () -> Unit) {
+        Handler(Looper.getMainLooper()).post(block)
+    }
+
+    /** 释放视频相关资源（需在 GL 线程调用，Activity 通过 queueEvent 触发） */
+    fun releaseVideo() {
+        videoDecoder?.release()
+        videoDecoder = null
+        videoST?.release()
+        videoST = null
     }
 }

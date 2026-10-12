@@ -69,4 +69,65 @@ class ImagePreprocessorTest {
         assertTrue(n(255, 0) != n(255, 1))
         assertTrue(n(255, 1) != n(255, 2))
     }
+
+    @Test
+    fun rgbaToNchwSkipsAlphaAndKeepsChannelOrder() {
+        // P3 视频路径：glReadPixels 出来的 RGBA8 字节流（alpha 通道必须被忽略）
+        // 2 个像素：纯红 / 纯绿，alpha 分别为 0xFF 与 0x00（不应影响结果）
+        val rgba = byteArrayOf(
+            255.toByte(), 0, 0, 255.toByte(),
+            0, 255.toByte(), 0, 0,
+        )
+        val out = ImagePreprocessor.rgbaToNchw(rgba, 2, 1)
+        val n = ImagePreprocessor::normalize
+
+        assertEquals(3 * 2, out.size)
+        // plane0 = R
+        assertEquals(n(255, 0), out[0], 1e-5f)
+        assertEquals(n(0, 0), out[1], 1e-5f)
+        // plane1 = G
+        assertEquals(n(0, 1), out[2], 1e-5f)
+        assertEquals(n(255, 1), out[3], 1e-5f)
+        // plane2 = B：两个像素的 B 都是 0
+        assertEquals(n(0, 2), out[4], 1e-5f)
+        assertEquals(n(0, 2), out[5], 1e-5f)
+    }
+
+    @Test
+    fun rgbaToNchwMatchesArgbPath() {
+        // 同一组颜色走两条路径（Bitmap ARGB / GL readPixels RGBA）必须完全一致，
+        // 否则视频流水线的深度会和 P2 静态图路径对不上。
+        val w = 4
+        val h = 2
+        val n = w * h
+        val rgba = ByteArray(n * 4)
+        val argb = IntArray(n)
+        for (i in 0 until n) {
+            val r = (i * 37) % 256
+            val g = (i * 91) % 256
+            val b = (i * 13) % 256
+            rgba[i * 4] = r.toByte()
+            rgba[i * 4 + 1] = g.toByte()
+            rgba[i * 4 + 2] = b.toByte()
+            rgba[i * 4 + 3] = 255.toByte()
+            argb[i] = (255 shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val fromRgba = ImagePreprocessor.rgbaToNchw(rgba, w, h)
+        val fromArgb = ImagePreprocessor.argbToNchw(argb)
+        assertEquals(fromArgb.size, fromRgba.size)
+        for (i in fromRgba.indices) {
+            assertEquals("索引 $i 处两条路径不一致", fromArgb[i], fromRgba[i], 1e-6f)
+        }
+    }
+
+    @Test
+    fun rgbaToNchwRejectsShortBuffer() {
+        var threw = false
+        try {
+            ImagePreprocessor.rgbaToNchw(ByteArray(10), 4, 4)
+        } catch (e: IllegalArgumentException) {
+            threw = true
+        }
+        assertTrue("缓冲区过短时应抛 IllegalArgumentException", threw)
+    }
 }

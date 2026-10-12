@@ -4,15 +4,20 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.google.ai.edge.litert.Accelerator
 import com.google.ai.edge.litert.CompiledModel
+import com.google.ai.edge.litert.TensorBuffer
 
 /**
- * LiteRT 2.3.0 V2 CompiledModel 封装的 DA V2 Small 深度估算器（P1 单帧版）。
+ * LiteRT 2.3.0 V2 CompiledModel 封装的 DA V2 Small 深度估算器（P3：支持实时帧流）。
  *
  * 模型：litert-community/depth-anything-v2-small
  * - INT8(dynamic wi8, afp32)：27.7MB，移动端首选
  * - FP32：99.5MB，精度基准
  *
  * 注意：GPU 路径使用 CompiledModel API（LiteRT V2 中 Interpreter + GpuDelegate 已不可用）。
+ *
+ * P3 变更：
+ * - 输入/输出 TensorBuffer 复用（原实现每次推理都 create/close，实时帧流下会造成明显 GC 压力）；
+ * - 新增 inferNchw()，直接吃 glReadPixels 转换出的 NCHW 数组，绕过 Bitmap。
  */
 class DepthEstimator(private val context: Context) {
 
@@ -35,6 +40,8 @@ class DepthEstimator(private val context: Context) {
 
     private var model: CompiledModel? = null
     private var loadedKey: String? = null
+    private var inputBuffers: Array<TensorBuffer>? = null
+    private var outputBuffers: Array<TensorBuffer>? = null
 
     val isLoaded: Boolean get() = model != null
 
@@ -65,27 +72,37 @@ class DepthEstimator(private val context: Context) {
 
     /** 单帧推理：bitmap 任意尺寸，内部拉伸到模型输入。 */
     fun infer(bitmap: Bitmap): DepthResult {
-        val compiled = model ?: error("model not loaded")
         val input = ImagePreprocessor.resize(bitmap)
-        val inputBuffers = compiled.createInputBuffers()
-        val outputBuffers = compiled.createOutputBuffers()
-        try {
-            inputBuffers[0].writeFloat(ImagePreprocessor.toNchwFloat(input))
-            compiled.run(inputBuffers, outputBuffers)
-            val depth = outputBuffers[0].readFloat()
-            return DepthResult(
-                depth = depth,
-                width = ImagePreprocessor.MODEL_W,
-                height = ImagePreprocessor.MODEL_H,
-            )
+        return try {
+            inferNchw(ImagePreprocessor.toNchwFloat(input))
         } finally {
-            inputBuffers.forEach { it.close() }
-            outputBuffers.forEach { it.close() }
             if (input != bitmap) input.recycle()
         }
     }
 
+    /**
+     * 单帧推理：直接吃 NCHW float（长度 3×518×686）。实时流水线主入口。
+     * 非线程安全 —— 调用方必须固定在同一线程（P3 用单线程 executor 保证）。
+     */
+    fun inferNchw(nchw: FloatArray): DepthResult {
+        val compiled = model ?: error("model not loaded")
+        val inputs = inputBuffers ?: compiled.createInputBuffers().also { inputBuffers = it }
+        val outputs = outputBuffers ?: compiled.createOutputBuffers().also { outputBuffers = it }
+        inputs[0].writeFloat(nchw)
+        compiled.run(inputs, outputs)
+        val depth = outputs[0].readFloat()
+        return DepthResult(
+            depth = depth,
+            width = ImagePreprocessor.MODEL_W,
+            height = ImagePreprocessor.MODEL_H,
+        )
+    }
+
     fun close() {
+        inputBuffers?.forEach { runCatching { it.close() } }
+        inputBuffers = null
+        outputBuffers?.forEach { runCatching { it.close() } }
+        outputBuffers = null
         model?.close()
         model = null
         loadedKey = null

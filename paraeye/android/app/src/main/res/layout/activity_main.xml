@@ -21,7 +21,22 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="1. 选择图片" />
+            android:text="1a. 选择图片（单帧验证）" />
+
+        <Button
+            android:id="@+id/pickVideoButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="1b. 选择视频（实时流水线）" />
+
+        <Button
+            android:id="@+id/playButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:enabled="false"
+            android:text="播放 / 暂停" />
 
         <RadioGroup
             android:id="@+id/acceleratorGroup"
@@ -72,7 +87,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="2. 生成 3D（推理 + 计时）" />
+            android:text="2. 生成 3D（单帧推理 + 计时）" />
 
         <TextView
             android:layout_width="match_parent"
@@ -123,10 +138,16 @@
             android:layout_height="wrap_content"
             android:text="左右交换（交叉眼观看时用）" />
 
+        <CheckBox
+            android:id="@+id/flipCheck"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="视频上下翻转（画面倒置时勾选）" />
+
         <android.opengl.GLSurfaceView
             android:id="@+id/glView"
             android:layout_width="match_parent"
-            android:layout_height="300dp"
+            android:layout_height="340dp"
             android:layout_marginTop="8dp" />
 
         <TextView
