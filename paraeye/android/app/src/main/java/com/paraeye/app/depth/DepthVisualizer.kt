@@ -3,7 +3,7 @@ package com.paraeye.app.depth
 import android.graphics.Bitmap
 import android.graphics.Color
 
-/** 深度图可视化：min-max 归一化 + HSV 色带（蓝=近，红=远） */
+/** 深度图可视化：min-max 归一化 + HSV 色带（红=近，蓝=远；近暖远冷） */
 object DepthVisualizer {
 
     fun normalize(depth: FloatArray): FloatArray {
@@ -26,7 +26,7 @@ object DepthVisualizer {
         val hsv = FloatArray(3)
         for (i in norm.indices) {
             val v = norm[i].coerceIn(0f, 1f)
-            hsv[0] = 240f * (1f - v)   // 近(1)=蓝 240°，远(0)=红 0°
+            hsv[0] = 240f * (1f - v)   // 近(1)=红 0°，远(0)=蓝 240°
             hsv[1] = 0.85f
             hsv[2] = 1f
             colors[i] = Color.HSVToColor(hsv)
