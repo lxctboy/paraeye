@@ -23,7 +23,11 @@ from transformers import AutoModelForDepthEstimation
 import litert_torch
 from litert_torch.quantize import pt2e_quantizer
 from litert_torch.quantize import quant_config
-from torch.ao.quantization import quantize_pt2e
+
+try:  # torch>=2.14 起 quantize_pt2e 搬进 torchao；CI 的 torch<2.14 可能仍在 torch.ao
+    from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
+except ImportError:
+    from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
 
 MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 
@@ -39,6 +43,20 @@ class DepthOnly(torch.nn.Module):
         return self.m(pixel_values=pixel_values).predicted_depth
 
 
+def _prepare(ep, quantizer):
+    """prepare_pt2e 的入参随 torch 版本漂移：老版吃 ExportedProgram，新版要 GraphModule。"""
+    candidates = [ep]
+    if hasattr(ep, "module"):
+        candidates.append(ep.module())
+    last = None
+    for c in candidates:
+        try:
+            return prepare_pt2e(c, quantizer)
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise RuntimeError(f"prepare_pt2e failed: {last}")
+
+
 def export_size(model, w: int, h: int, out_path: str) -> None:
     wrapper = DepthOnly(model).eval()
     sample = (torch.randn(1, 3, h, w),)
@@ -49,7 +67,10 @@ def export_size(model, w: int, h: int, out_path: str) -> None:
         )
     )
 
-    # 动态量化：激活侧用 PlaceholderObserver，无需校准前向
+    # 动态量化（DRQ）：int8 per-channel 权重 + 运行时动态激活量化，float 进 float 出
+    # （与社区 wi8_afp32 模型同 scheme，Android 侧零改动）。
+    # 注意：pt2e 动态量化图在 eager 模式下跑不出正确数值（DRQ 语义靠转换器 lowering），
+    # 数值验证必须等 tflite 产出后用 validate_tflite.py 做。
     t0 = time.time()
     try:
         ep = torch.export.export(wrapper, sample)
@@ -59,13 +80,13 @@ def export_size(model, w: int, h: int, out_path: str) -> None:
     print(f"  export ok ({time.time() - t0:.0f}s)")
 
     t0 = time.time()
-    ep = quantize_pt2e.prepare_pt2e(ep, quantizer)
-    ep = quantize_pt2e.convert_pt2e(ep, fold_quantize=False)
+    ep_q = _prepare(ep, quantizer)
+    ep_q = convert_pt2e(ep_q, fold_quantize=False)
     print(f"  pt2e quantize ok ({time.time() - t0:.0f}s)")
 
     t0 = time.time()
     edge = litert_torch.convert(
-        ep,
+        ep_q,
         sample,
         quant_config=quant_config.QuantConfig(pt2e_quantizer=quantizer),
     )
