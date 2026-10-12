@@ -64,6 +64,13 @@ class DepthEstimator(private val context: Context) {
                             CompiledModel.GpuOptions.Precision.FP32
                         },
                     )
+                } else {
+                    // CPU：显式指定 XNNPACK 推理线程数。缺省值偏保守（真机实测
+                    // ~973ms/帧，深度只有 ~1FPS）；手机 SoC 上 4 线程是常见甜点，
+                    // 小核机型至少保 2 线程。仅 CPU 路径有效。
+                    cpuOptions = CompiledModel.CpuOptions(
+                        numThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
+                    )
                 }
             }
             model = CompiledModel.create(context.assets, modelType.assetName, options, null)

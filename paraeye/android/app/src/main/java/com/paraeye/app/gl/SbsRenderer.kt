@@ -17,6 +17,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -244,9 +245,12 @@ void main() {
     private var lastDrawNs = 0L
 
     // ---- 统计窗口 ----
+    // 窗口取 2s：CPU 推理慢（~1s/帧）时 500ms 窗口会整轮落空，
+    // 深度帧率显示在 0.0 / 2.0 之间跳变（截图里看到的 0.0 即此假象）
     private var windowStartMs = 0L
     private var videoFrames = 0
-    private var depthFrames = 0
+    /** 推理线程自增、GL 线程读取并清零，必须原子操作 */
+    private val depthFrames = AtomicInteger(0)
     @Volatile private var videoInfoSent = false
 
     @Volatile private var pendingStart: Pair<Context, Uri>? = null
@@ -284,7 +288,7 @@ void main() {
      */
     fun submitDepthTarget(normalized: FloatArray) {
         depthTarget = normalized
-        depthFrames++
+        depthFrames.incrementAndGet()
         requestRender?.invoke()
     }
 
@@ -597,12 +601,11 @@ void main() {
         if (newVideoFrame) videoFrames++
         val now = System.currentTimeMillis()
         val elapsed = now - windowStartMs
-        if (elapsed >= 500) {
+        if (elapsed >= 2000) {
             videoFps = videoFrames * 1000f / elapsed
-            depthFps = depthFrames * 1000f / elapsed
+            depthFps = depthFrames.getAndSet(0) * 1000f / elapsed
             windowStartMs = now
             videoFrames = 0
-            depthFrames = 0
         }
     }
 
