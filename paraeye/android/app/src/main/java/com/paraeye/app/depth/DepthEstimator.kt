@@ -47,17 +47,22 @@ class DepthEstimator(private val context: Context) {
     val isLoaded: Boolean get() = model != null
 
     /** 加载（或复用）模型；参数变化时重载。返回是否加载成功。 */
-    fun ensureLoaded(modelType: ModelType, useGpu: Boolean): Boolean {
-        val key = "${modelType.name}:$useGpu"
+    fun ensureLoaded(modelType: ModelType, useGpu: Boolean, useFp16: Boolean = false): Boolean {
+        val key = "${modelType.name}:$useGpu:$useFp16"
         if (key == loadedKey && model != null) return true
         close()
         return try {
             val accelerator = if (useGpu) Accelerator.GPU else Accelerator.CPU
             val options = CompiledModel.Options(accelerator).apply {
                 if (useGpu) {
-                    // DA 解码器输出动态范围大，GPU 侧保持 FP32 精度
+                    // FP32 是保险默认（DA 解码器输出动态范围大）；FP16 在多数 GPU 上
+                    // 快 1.3~2 倍，精度略降，由用户在 UI 上显式选择（P3.5）
                     gpuOptions = CompiledModel.GpuOptions(
-                        precision = CompiledModel.GpuOptions.Precision.FP32,
+                        precision = if (useFp16) {
+                            CompiledModel.GpuOptions.Precision.FP16
+                        } else {
+                            CompiledModel.GpuOptions.Precision.FP32
+                        },
                     )
                 }
             }

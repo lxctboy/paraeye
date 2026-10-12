@@ -11,9 +11,11 @@ import android.opengl.GLUtils
 import android.os.Handler
 import android.os.Looper
 import com.paraeye.app.depth.ImagePreprocessor
+import com.paraeye.app.depth.TemporalSmoother
 import com.paraeye.app.video.VideoDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -21,12 +23,15 @@ import javax.microedition.khronos.opengles.GL10
 /**
  * GL 帧深度消费者：由上层注入。
  *
- * onFrameForDepth 在 **GL 线程** 被调用，实现方必须在返回前把数据拷走
- * （本渲染器会复用 rgba 缓冲区），随后在自有线程上完成推理并回调 submitDepth。
+ * onFrameForDepth 在 **GL 线程** 被调用，rgba 来自渲染器的双缓冲池
+ * （P3.5 起不再需要调用方拷贝）；使用完毕后**必须**调用 recycle 归还，
+ * 否则池耗尽后续帧会被丢弃。推理在实现方自有线程完成，结果经
+ * submitDepthTarget 交回渲染器。
  */
 interface FrameDepthConsumer {
     val busy: Boolean
     fun onFrameForDepth(rgba: ByteArray)
+    fun recycle(rgba: ByteArray)
 }
 
 /**
@@ -59,11 +64,16 @@ class SbsRenderer : GLSurfaceView.Renderer {
         /** min-max 归一化后的深度打包成单通道 8bit（手机 GPU 上比 float 纹理更稳） */
         fun depthToR8(normalized: FloatArray): ByteArray {
             val out = ByteArray(normalized.size)
+            depthToR8Into(normalized, out)
+            return out
+        }
+
+        /** depthToR8 的零分配版本（渲染线程每帧复用） */
+        fun depthToR8Into(normalized: FloatArray, out: ByteArray) {
             for (i in normalized.indices) {
                 val v = (normalized[i].coerceIn(0f, 1f) * 255f + 0.5f).toInt().coerceIn(0, 255)
                 out[i] = v.toByte()
             }
-            return out
         }
 
         // ---- 主 pass：视图合成 / 伪彩深度 ----
@@ -187,6 +197,9 @@ void main() {
     @Volatile private var pendingBitmap: Bitmap? = null
     @Volatile private var pendingDepth: ByteArray? = null
 
+    /** 推理线程发布的最新归一化深度（引用先写内容后发布，volatile 保证可见性） */
+    @Volatile private var depthTarget: FloatArray? = null
+
     private var surfaceW = 1
     private var surfaceH = 1
     private var srcW = 1
@@ -214,7 +227,21 @@ void main() {
     private val readBuf: ByteBuffer = ByteBuffer
         .allocateDirect(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H * 4)
         .order(ByteOrder.nativeOrder())
-    private val readBytes = ByteArray(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H * 4)
+
+    /** rgba 双缓冲池：GL 线程取出即填，推理线程用完 recycle 归还 */
+    private val rgbaPool = ArrayBlockingQueue<ByteArray>(2).apply {
+        repeat(2) { add(ByteArray(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H * 4)) }
+    }
+
+    /** 深度纹理上传：预分配 direct buffer + R8 字节（原每帧分配，P3.5 复用） */
+    private val depthUploadBuf: ByteBuffer = ByteBuffer
+        .allocateDirect(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H)
+        .order(ByteOrder.nativeOrder())
+    private val depthR8 = ByteArray(ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H)
+
+    /** 渲染线程的时域平滑（与 P0 定档 alpha=0.7 等效的时间常数 τ≈138ms） */
+    private val smoother = TemporalSmoother(alpha = 0.7f)
+    private var lastDrawNs = 0L
 
     // ---- 统计窗口 ----
     private var windowStartMs = 0L
@@ -247,13 +274,23 @@ void main() {
     fun submitFrame(bitmap: Bitmap, depthR8: ByteArray) {
         pendingBitmap = bitmap
         pendingDepth = depthR8
+        depthTarget = null
+        smoother.reset()
     }
 
-    /** 视频路径（P3）：提交深度（尺寸恒为 MODEL_W x MODEL_H），线程安全 */
-    fun submitDepth(depthR8: ByteArray) {
-        pendingDepth = depthR8
+    /**
+     * 视频路径（P3）：推理线程提交归一化深度（[0,1]，尺寸恒为 MODEL_W x MODEL_H）。
+     * 线程安全；渲染线程随后以帧率无关的 EMA 逐帧过渡到该目标。
+     */
+    fun submitDepthTarget(normalized: FloatArray) {
+        depthTarget = normalized
         depthFrames++
         requestRender?.invoke()
+    }
+
+    /** 归还 rgba 缓冲到池（推理线程用完必须调用） */
+    fun recycleRgba(buf: ByteArray) {
+        rgbaPool.offer(buf)
     }
 
     fun startVideo(context: Context, uri: Uri) {
@@ -270,6 +307,11 @@ void main() {
         videoDecoder?.paused = paused
     }
 
+    /** 切换视频 / 换模型时重置过渡状态，避免把上一个场景的深度混进来 */
+    fun resetDepthSmoother() {
+        smoother.reset()
+    }
+
     val isVideoActive: Boolean get() = videoDecoder != null
 
     /** GL 线程：上传 UI 线程提交的数据 */
@@ -284,20 +326,28 @@ void main() {
             pendingBitmap = null
         }
         pendingDepth?.let { buf ->
-            val w = ImagePreprocessor.MODEL_W
-            val h = ImagePreprocessor.MODEL_H
-            val data = ByteBuffer.allocateDirect(buf.size).order(ByteOrder.nativeOrder()).apply {
-                put(buf); position(0)
+            if (buf.size == depthR8.size) {
+                System.arraycopy(buf, 0, depthR8, 0, buf.size)
+                uploadDepthR8()
             }
-            GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1) // 宽度非 4 倍数时必须设为 1
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTex)
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-                w, h, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, data
-            )
-            hasDepth = true
             pendingDepth = null
         }
+    }
+
+    /** 上传当前 depthR8 到深度纹理（P3.5：direct buffer 预分配复用） */
+    private fun uploadDepthR8() {
+        val w = ImagePreprocessor.MODEL_W
+        val h = ImagePreprocessor.MODEL_H
+        depthUploadBuf.clear()
+        depthUploadBuf.put(depthR8)
+        depthUploadBuf.position(0)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1) // 宽度非 4 倍数时必须设为 1
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTex)
+        GLES20.glTexImage2D(
+            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+            w, h, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, depthUploadBuf
+        )
+        hasDepth = true
     }
 
     // ---------------- Renderer ----------------
@@ -340,6 +390,8 @@ void main() {
 
         hasColor = false
         hasDepth = false
+        smoother.reset()
+        lastDrawNs = 0L
         windowStartMs = System.currentTimeMillis()
     }
 
@@ -349,6 +401,10 @@ void main() {
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        val nowNs = System.nanoTime()
+        val dtMs = if (lastDrawNs == 0L) 0f else (nowNs - lastDrawNs) / 1_000_000f
+        lastDrawNs = nowNs
+
         handleVideoCommands()
         val newVideoFrame = consumeVideoFrame()
         uploadPending()
@@ -358,6 +414,16 @@ void main() {
             if (consumer != null && !consumer.busy) {
                 dispatchDepthFrame(consumer)
             }
+        }
+
+        // 深度过渡（P3.5 治卡的关键）：推理只有 ~6FPS，若直接把推理结果贴到纹理，
+        // 中间渲染帧深度不变，看起来一跳一跳。这里用与 P0 定档 alpha=0.7 等效的
+        // 连续时间常数 τ≈138ms，把低帧率目标插值到每个渲染帧。
+        val target = depthTarget
+        if (target != null) {
+            val cur = smoother.advance(target, dtMs.coerceAtMost(100f))
+            depthToR8Into(cur, depthR8)
+            uploadDepthR8()
         }
 
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -407,6 +473,8 @@ void main() {
             videoInfoSent = false
             hasColor = false
             hasDepth = false
+            depthTarget = null
+            smoother.reset()
         }
         pendingStart?.let { (ctx, uri) ->
             pendingStart = null
@@ -466,8 +534,9 @@ void main() {
         return true
     }
 
-    /** displayTex -> 模型分辨率 FBO -> readPixels -> 交给消费者 */
+    /** displayTex -> 模型分辨率 FBO -> readPixels -> 交给消费者（P3.5：池化零拷贝） */
     private fun dispatchDepthFrame(consumer: FrameDepthConsumer) {
+        val buf = rgbaPool.poll() ?: return   // 池空（上帧推理未完成）→ 丢帧，不阻塞 GL
         val w = ImagePreprocessor.MODEL_W
         val h = ImagePreprocessor.MODEL_H
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, modelFbo)
@@ -485,8 +554,8 @@ void main() {
         GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readBuf)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         readBuf.position(0)
-        readBuf.get(readBytes)
-        consumer.onFrameForDepth(readBytes)
+        readBuf.get(buf)
+        consumer.onFrameForDepth(buf)
     }
 
     private fun ensureDisplayTex(w: Int, h: Int) {

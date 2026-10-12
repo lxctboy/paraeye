@@ -20,7 +20,6 @@ import com.paraeye.app.depth.DepthBenchmark
 import com.paraeye.app.depth.DepthEstimator
 import com.paraeye.app.depth.DepthVisualizer
 import com.paraeye.app.depth.ImagePreprocessor
-import com.paraeye.app.depth.TemporalSmoother
 import com.paraeye.app.gl.FrameDepthConsumer
 import com.paraeye.app.gl.SbsRenderer
 import kotlinx.coroutines.Dispatchers
@@ -51,10 +50,14 @@ class MainActivity : ComponentActivity() {
 
     /** 推理固定跑在单线程上（LiteRT CompiledModel 非线程安全，且这样天然串行） */
     private val inferExecutor = Executors.newSingleThreadExecutor()
-    private val smoother = TemporalSmoother(alpha = 0.7f)   // P0 定档
+
+    /** 预分配 NCHW 输入（实时路径每帧复用，避免 4.3MB/帧 的分配） */
+    private val nchwBuf = FloatArray(3 * ImagePreprocessor.MODEL_W * ImagePreprocessor.MODEL_H)
+
     @Volatile private var inflight = false
     @Volatile private var lastInferMs = 0f
     @Volatile private var useGpu = false
+    @Volatile private var useFp16 = false
     @Volatile private var modelType = DepthEstimator.ModelType.INT8
     @Volatile private var videoMode = false
     @Volatile private var playing = false
@@ -63,8 +66,12 @@ class MainActivity : ComponentActivity() {
     private val statsTask = object : Runnable {
         override fun run() {
             if (videoMode) {
+                val acc = buildString {
+                    append(if (useGpu) "GPU" else "CPU")
+                    if (useGpu && useFp16) append("/FP16")
+                }
                 statsText.text = buildString {
-                    appendLine("实时流水线 (${modelType.label} / ${if (useGpu) "GPU" else "CPU"})")
+                    appendLine("实时流水线 (${modelType.label} / $acc)")
                     appendLine("视频帧率: %.1f FPS".format(renderer.videoFps))
                     appendLine("深度更新: %.1f FPS".format(renderer.depthFps))
                     appendLine("单帧推理: %.1f ms".format(lastInferMs))
@@ -171,6 +178,12 @@ class MainActivity : ComponentActivity() {
                 glView.requestRender()
             }
 
+        findViewById<CheckBox>(R.id.fp16Check)
+            .setOnCheckedChangeListener { _, isChecked ->
+                useFp16 = isChecked
+                onConfigChanged()
+            }
+
         findViewById<CheckBox>(R.id.flipCheck)
             .setOnCheckedChangeListener { _, isChecked ->
                 renderer.videoFlipY = isChecked
@@ -203,40 +216,43 @@ class MainActivity : ComponentActivity() {
 
     private fun onConfigChanged() {
         // 换模型/加速器后时域平滑的历史深度失效
-        smoother.reset()
+        renderer.resetDepthSmoother()
     }
 
     private val frameConsumer = object : FrameDepthConsumer {
         override val busy: Boolean get() = inflight
 
         override fun onFrameForDepth(rgba: ByteArray) {
-            // 在 GL 线程上完成拷贝：渲染器会复用 rgba 缓冲
-            val copy = rgba.copyOf()
+            // P3.5：rgba 来自渲染器双缓冲池，无需拷贝；用完 recycle 归还
             inflight = true
             inferExecutor.execute {
                 try {
                     val est = ensureEstimator()
                     val t0 = System.nanoTime()
-                    val raw = est.inferNchw(
-                        ImagePreprocessor.rgbaToNchw(copy, ImagePreprocessor.MODEL_W, ImagePreprocessor.MODEL_H)
+                    ImagePreprocessor.rgbaToNchwInto(
+                        rgba, ImagePreprocessor.MODEL_W, ImagePreprocessor.MODEL_H, nchwBuf
                     )
+                    val raw = est.inferNchw(nchwBuf)
                     lastInferMs = (System.nanoTime() - t0) / 1_000_000f
-                    val smoothed = smoother.apply(DepthVisualizer.normalize(raw.depth))
-                    renderer.submitDepth(SbsRenderer.depthToR8(smoothed))
+                    // 归一化后的目标深度交给渲染器，由其逐帧 EMA 过渡（治 6FPS 跳变）
+                    renderer.submitDepthTarget(DepthVisualizer.normalize(raw.depth))
                 } catch (e: Exception) {
-                    inflight = false
                     runOnUiThread { statusText.text = "推理失败：${e.message}" }
-                    return@execute
                 } finally {
                     inflight = false
+                    recycle(rgba)
                 }
             }
+        }
+
+        override fun recycle(rgba: ByteArray) {
+            renderer.recycleRgba(rgba)
         }
     }
 
     private fun ensureEstimator(): DepthEstimator {
         val est = estimator ?: DepthEstimator(applicationContext).also { estimator = it }
-        if (!est.ensureLoaded(modelType, useGpu)) {
+        if (!est.ensureLoaded(modelType, useGpu, useFp16)) {
             error("模型加载失败（GPU 不受支持时请改用 CPU）")
         }
         return est
@@ -248,7 +264,7 @@ class MainActivity : ComponentActivity() {
         currentBitmap = null
         videoMode = true
         playing = true
-        smoother.reset()
+        renderer.resetDepthSmoother()
         playButton.text = "暂停播放"
         playButton.isEnabled = true
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY

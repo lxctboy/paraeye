@@ -1,10 +1,11 @@
-# ParaEye Android（P1 + P2 + P3）
+# ParaEye Android（P1 + P2 + P3 + P3.5）
 
 阶段目标：
 
 - **P1**：LiteRT GPU/CPU 上跑通 Depth Anything V2 Small 单帧推理，输出深度图与耗时基准，为模型选型提供实测数据 ✅
-- **P2**：GPU 视图合成——深度驱动左右眼 warp，输出 Full-SBS，可在手机上直接观看 3D ✅
-- **P3**：本地视频实时流水线——MediaCodec 硬解 → GPU 归一化/降采样 → 异步推理 → SBS 实时渲染 🚧（编译通过，待真机验证）
+- **P2**：GPU 视图合成——深度驱动左右眼 warp，输出 Full-SBS，可在手机上直接观看 3D ✅（真机验证通过）
+- **P3**：本地视频实时流水线——MediaCodec 硬解 → GPU 归一化/降采样 → 异步推理 → SBS 实时渲染 ✅（编译通过，真机跑通）
+- **P3.5**：帧率优化——预处理 LUT/预分配、GL↔推理零拷贝、渲染线程逐帧深度过渡（治 6FPS 跳变）、GPU FP16 选项 ✅
 
 ## 技术栈
 
@@ -54,10 +55,13 @@ gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一�
 ### 视频（P3 实时流水线）
 
 1. 「选择视频」从相册选一段本地视频（自动循环播放）
-2. 选 CPU/GPU × INT8/FP32 —— **实时场景建议先试 INT8**
+2. 选 CPU/GPU × INT8/FP32 —— **实时场景建议先试 INT8**；GPU 上 INT8 不会更快（GPU delegate 权重按 FP32 执行，见下）
 3. 画面直接以 SBS 实时渲染；状态区显示视频帧率 / 深度更新帧率 / 单帧推理耗时
 4. 画面上下颠倒时勾选「视频上下翻转」（部分机型 OES 变换矩阵方向相反，见下方已知边界）
-5. 「暂停播放」后画面停在当前帧，适合静态观察某一帧的立体感
+5. 「GPU FP16」复选框：仅 GPU 有效，通常快 1.3~2 倍、精度略降，可自行对比深度图质量
+6. 「暂停播放」后画面停在当前帧，适合静态观察某一帧的立体感
+
+> **GPU × INT8 为何不更快**：LiteRT GPU delegate 对 wi8/afp32 模型按 FP32 精度执行（`GpuOptions.Precision.FP32` 是 DA 解码器动态范围的保险默认），所以 GPU×INT8 与 GPU×FP32 耗时几乎相同（实测 177ms vs 176.8ms）。GPU 上要更快只有两条路：勾 FP16，或换更强的 GPU。
 
 ## P3 流水线结构
 
@@ -69,12 +73,12 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
                                             │  [降采样 pass → FBO 686×518]
                                             ▼
                                      glReadPixels ──▶ RGBA 字节
-                                            │  （GL 线程上 copyOf 后交给推理线程）
+                                            │  （双缓冲池零拷贝交推理线程，用完 recycle 归还）
                                             ▼
-                          ImagePreprocessor.rgbaToNchw → LiteRT inferNchw
-                                            │  normalize → EMA(α=0.7) → depthToR8
+                          ImagePreprocessor.rgbaToNchwInto → LiteRT inferNchw
+                                            │  normalize（目标深度，发布给渲染器）
                                             ▼
-                                      depthTex (GL_LUMINANCE)
+                             渲染线程：EMA advance(τ≈138ms) → depthToR8 → depthTex
                                             │
                                             ▼
                               单 program + 两次 glViewport → Full-SBS
@@ -83,8 +87,10 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 关键设计：
 
 - **推理与渲染解耦**：推理跑在单线程 executor 上，`busy` 时直接丢帧，显示帧率不受推理耗时拖累（代价是深度更新率低于视频帧率）
+- **P3.5 逐帧深度过渡（治卡核心）**：推理只有 ~6FPS 时，离散 EMA 也只在深度到来时生效，中间渲染帧深度不变，看起来一跳一跳。`TemporalSmoother.advance()` 把同一个时间常数 τ≈138ms（与 P0 定档 α=0.7@6FPS **数学等效**，有单测）展开到每个渲染帧，视觉上把 6FPS 深度插值成渲染帧率
+- **零分配热路径**：NCHW 输入、rgba 双缓冲池、深度上传 buffer、R8 输出全部预分配复用；归一化走 256×3 LUT（省 106 万次除法/帧）
 - **TensorBuffer 复用**：P1 每次推理都 create/close，`inferNchw` 改为复用输入/输出缓冲，消除实时路径下的 GC 压力
-- **EMA 与 P0 同口径**：`D_t = 0.7·cur + 0.3·prev_smoothed`，作用在归一化后的深度上（帧间深度尺度会漂移，平滑原始深度会产生呼吸感）
+- **EMA 与 P0 同口径**：作用在归一化后的深度上（帧间深度尺度会漂移，平滑原始深度会产生呼吸感）
 - **EGL 上下文保留**：`setPreserveEGLContextOnPause(true)`，否则 onPause/onResume 重建 GL 资源会让解码器持有的 SurfaceTexture 悬空
 
 ## 视图合成约定（与 P0 完全一致）
@@ -119,15 +125,21 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 
 ### P3
 
-- [ ] 视频能正常播放且方向正确（若上下颠倒，验证「上下翻转」开关是否修正）
-- [ ] 视频帧率是否达到源片源帧率（30fps）
-- [ ] 深度更新帧率与单帧推理耗时（INT8 预期显著优于 FP32）
+- [x] 视频能正常播放且方向正确（真机确认：默认方向正确，无需勾翻转，2026-10-12）
+- [x] 视频帧率达到源片源帧率（真机 27.9 FPS @30fps 片源）
+- [x] 深度更新帧率与单帧推理耗时（真机：深度 6.0 FPS / 推理 177.4ms，GPU×INT8）
+- [x] SBS 立体效果真机可见（静态图路径用户确认）
+- [ ] 逐帧过渡后的主观流畅度（P3.5 核心目标，待用户复测）
+- [ ] GPU FP16 耗时与深度质量（待测）
+- [ ] CPU×INT8 / CPU×FP32 耗时（待测，可能比弱 GPU 更快）
 - [ ] glReadPixels 的实际开销：对比「有/无降采样 pass」的帧率差
 - [ ] 播放流畅度主观评价：深度滞后（帧丢弃策略）是否可接受
 
 ## 已知边界
 
-- 预处理仍是 CPU 循环（`ImagePreprocessor.rgbaToNchw`，686×518×3 ≈ 106 万元素），未计入 GL
+- **GPU×INT8 不加速**：GPU delegate 按 FP32 执行权重（保险默认），INT8 模型在 GPU 上与 FP32 耗时几乎相同；GPU 上提速靠 FP16 复选框
+- 推理本身仍 ~177ms（弱 GPU FP32）：真正的数量级提升要靠**降输入分辨率**（ViT 计算量 ∝ token²，686×518=1813 tokens，518×518=1369，432×324≈713）——需重新导出模型，排 P4
+- 预处理 LUT + 预分配已做，但仍是 CPU 循环（686×518×3 ≈ 106 万元素）
 - 模型固定 686×518 拉伸输入；GL 渲染按源图宽高比 letterbox，Depth 采样跟随图像 UV，因此不会因为拉伸错位
 - 空洞内插（P0 的 inpaint）尚未移植到 GL；当前靠 CLAMP_TO_EDGE 拉伸，近景边缘可能有轻微涂抹
 - **OES 方向**：按 Grafika 约定推导（原始 `t=1` 对应视频顶部），部分机型/片源可能相反，故保留「上下翻转」开关而非硬编码

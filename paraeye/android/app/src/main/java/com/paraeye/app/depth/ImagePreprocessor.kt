@@ -15,6 +15,15 @@ object ImagePreprocessor {
     val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
     val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
 
+    /**
+     * 归一化查找表：LUT[v * 3 + c] = normalize(v, c)。
+     * 视频路径每帧要对 3×686×518 ≈ 106 万元素做归一化，
+     * 查表把每元素 2 次除法降为 1 次数组读（ART 上约省 3~6ms/帧）。
+     */
+    private val LUT = FloatArray(256 * 3).also { lut ->
+        for (v in 0..255) for (c in 0..2) lut[v * 3 + c] = normalize(v, c)
+    }
+
     /** 拉伸缩放到模型输入尺寸 */
     fun resize(bitmap: Bitmap): Bitmap =
         Bitmap.createScaledBitmap(bitmap, MODEL_W, MODEL_H, true)
@@ -53,20 +62,29 @@ object ImagePreprocessor {
      * 由 SbsRenderer 的降采样 pass 用 aPos.y*0.5+0.5 翻转修正）。
      */
     fun rgbaToNchw(rgba: ByteArray, width: Int, height: Int): FloatArray {
+        val out = FloatArray(3 * width * height)
+        rgbaToNchwInto(rgba, width, height, out)
+        return out
+    }
+
+    /**
+     * rgbaToNchw 的零分配版本：写入调用方预分配的 out（实时路径每帧复用）。
+     * 数值与 rgbaToNchw 逐元素一致（LUT 只是 normalize 的查表形式）。
+     */
+    fun rgbaToNchwInto(rgba: ByteArray, width: Int, height: Int, out: FloatArray) {
         val n = width * height
         require(rgba.size >= n * 4) { "rgba 缓冲区过小：${rgba.size} < ${n * 4}" }
-        val out = FloatArray(3 * n)
+        require(out.size >= 3 * n) { "out 缓冲区过小：${out.size} < ${3 * n}" }
         var p = 0
         for (i in 0 until n) {
             val r = rgba[p].toInt() and 0xFF
             val g = rgba[p + 1].toInt() and 0xFF
             val b = rgba[p + 2].toInt() and 0xFF
             p += 4
-            out[i] = normalize(r, 0)
-            out[n + i] = normalize(g, 1)
-            out[2 * n + i] = normalize(b, 2)
+            out[i] = LUT[r * 3]
+            out[n + i] = LUT[g * 3 + 1]
+            out[2 * n + i] = LUT[b * 3 + 2]
         }
-        return out
     }
 
     /** 纯函数：单通道归一化（JVM 单测直接覆盖） */

@@ -139,6 +139,12 @@
             android:text="左右交换（交叉眼观看时用）" />
 
         <CheckBox
+            android:id="@+id/fp16Check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="GPU FP16（更快，精度略降；仅 GPU 有效）" />
+
+        <CheckBox
             android:id="@+id/flipCheck"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
