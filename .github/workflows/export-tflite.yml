@@ -10,7 +10,7 @@ on:
       sizes:
         description: "输入尺寸 WxH，逗号分隔（必须被 14 整除）"
         required: false
-        default: "686x518,392x518,280x518"
+        default: "280x518,686x518"
   push:
     paths:
       - "paraeye/p4/export_tflite.py"
@@ -32,11 +32,14 @@ jobs:
       - name: Install deps（torch 必须 <2.14：litert-torch 的上限约束；走 CPU index 免 CUDA）
         run: |
           pip install "torch<2.14" --index-url https://download.pytorch.org/whl/cpu
-          pip install litert-torch transformers
+          pip install litert-torch transformers ai-edge-quantizer opencv-python-headless
 
+      # 量化方案 = 社区模型同款：FP32 tflite + AI Edge Quantizer dynamic_wi8_afp32
+      # （v1 用 litert-torch pt2e 导出的模型是坏的：输出恒为常数 0.0887）
+      # 脚本自带 self-validate：tflite vs torch corr<0.95 或输出为常数则非零退出
       - name: Export tflite
         run: |
-          SIZES="${{ inputs.sizes || '686x518,392x518,280x518' }}"
+          SIZES="${{ inputs.sizes || '280x518,686x518' }}"
           python paraeye/p4/export_tflite.py --sizes "$SIZES" --out-dir out
 
       - uses: actions/upload-artifact@v4
