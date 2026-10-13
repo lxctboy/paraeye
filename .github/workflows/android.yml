@@ -13,20 +13,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      # 安装固定版本的 Gradle（不启用依赖缓存服务的 caching，
-      # 本仓库 build-root 在 paraeye/android 且需自管日志输出）。
+      # 安装固定版本的 Gradle。关闭依赖缓存服务的 caching（cache-read-only 在本仓库
+      # 会触发 Cache service 400，导致 gradle 未安装却继续往下跑）。
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-          caching: disabled
+          cache-disabled: true
 
       # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper。
       # 自己 tee 日志落盘：Verify 步骤读它判成败，action 内建输出取不到。
