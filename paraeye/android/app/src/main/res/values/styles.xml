@@ -3,8 +3,10 @@
     <!--
         胶囊 chip 样式：去掉 RadioButton/CheckBox 自带圆点与最小宽度，
         用 shape 做背景，选中态由 :checked 驱动（bg_chip.xml）。
+        parent="" 必须显式写空：否则点号命名会隐式继承不存在的 ParaEye 父样式，
+        AAPT 直接报 style/ParaEye not found。
     -->
-    <style name="ParaEye.Chip">
+    <style name="ParaEye.Chip" parent="">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">34dp</item>
         <item name="android:layout_marginEnd">8dp</item>
