@@ -1,4 +1,4 @@
-# ParaEye Android（P1 + P2 + P3 + P3.5 + P4）
+# ParaEye Android（P1 + P2 + P3 + P3.5）
 
 阶段目标：
 
@@ -6,7 +6,6 @@
 - **P2**：GPU 视图合成——深度驱动左右眼 warp，输出 Full-SBS，可在手机上直接观看 3D ✅（真机验证通过）
 - **P3**：本地视频实时流水线——MediaCodec 硬解 → GPU 归一化/降采样 → 异步推理 → SBS 实时渲染 ✅（编译通过，真机跑通）
 - **P3.5**：帧率优化——预处理 LUT/预分配、GL↔推理零拷贝、渲染线程逐帧深度过渡（治 6FPS 跳变）、GPU FP16 选项 ✅
-- **P4**：摄像头实时 3D——CameraX Preview 直接喂渲染器的 OES SurfaceTexture，与视频路径共用整条 GL 管线 ✅（编译通过，待真机验证）
 
 ## 技术栈
 
@@ -14,7 +13,6 @@
 - 推理：**LiteRT 2.3.0 V2 CompiledModel API**（`com.google.ai.edge.litert:litert` + `litert-gpu`）
 - 渲染：**OpenGL ES 2.0**（兼容性优先，未用 GLES3 浮点纹理）
 - 解码：**MediaExtractor + MediaCodec**（输出 Surface → SurfaceTexture，全程无 CPU 拷贝）
-- 相机（P4）：**CameraX 1.3.4**（camera-core/camera2/lifecycle，**不含 camera-view**——不用 PreviewView，预览直接写我们的 SurfaceTexture）
 - 模型：**P4 起改用自导出的 280×518 INT8**（社区原版只有 686×518，会把竖屏视频竖挤 2.35 倍）
   - 由 `.github/workflows/export-tflite.yml` 重导出，发布到滚动 release「models」，构建时下载
   - 量化与社区原版同款：AI Edge Quantizer `dynamic_wi8_afp32`（int8 权重 + fp32 接口，27.6MB）
@@ -65,26 +63,12 @@ gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一�
 5. 「GPU FP16」复选框：仅 GPU 有效，通常快 1.3~2 倍、精度略降，可自行对比深度图质量
 6. 「暂停播放」后画面停在当前帧，适合静态观察某一帧的立体感
 
-### 摄像头（P4 实时 3D）
-
-1. 「摄像头」按钮：首次使用会弹 CAMERA 运行时权限（危险权限，仅清单声明不够）
-2. 预览直接以 SBS 实时渲染；前/后置切换 = unbindAll + 重新 bind（画面会黑一下）
-3. 状态区显示预览分辨率 / 深度更新帧率 / 单帧推理耗时；发热控制同视频路径（深度帧率上限）
-4. 「暂停播放」在相机路径 = 停止消费预览帧，画面冻结在最后一帧（恢复后取最新帧）
-5. 与视频/图片互斥：选视频或图片会自动关闭摄像头
-
-> **相机方向的设计**：CameraX 对 SurfaceTexture 只保证 `getTransformMatrix` 把内容旋到
-> **设备自然方向（竖屏 upright）**，显示方向由消费方负责（见 CameraX Preview 文档）。
-> ParaEye 固定竖屏观看，故 FBO 恒取竖屏内容尺寸，横竖屏手持都由 SBS 整对 letterbox 适配。
-> 预览按 **16:9** 请求：内容 9:16 ≈ 模型输入 280×518（0.5409），深度几乎不形变。
-
 > **GPU × INT8 为何不更快**：LiteRT GPU delegate 对 wi8/afp32 模型按 FP32 精度执行（`GpuOptions.Precision.FP32` 是 DA 解码器动态范围的保险默认），所以 GPU×INT8 与 GPU×FP32 耗时几乎相同（实测 177ms vs 176.8ms）。GPU 上要更快只有两条路：勾 FP16，或换更强的 GPU。
 
 ## P3 流水线结构
 
 ```
 MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
-CameraX Preview ──▶ Surface(OES 纹理)   ← P4 相机路径，零拷贝汇入同一入口
                                             │  [归一化 pass: texMtx + 可选翻转]
                                             ▼
                                        displayTex (2D, row0 = 图像顶部)
@@ -147,13 +131,6 @@ CameraX Preview ──▶ Surface(OES 纹理)   ← P4 相机路径，零拷贝�
 - [x] 视频帧率达到源片源帧率（真机 27.9 FPS @30fps 片源）
 - [x] 深度更新帧率与单帧推理耗时（真机：深度 6.0 FPS / 推理 177.4ms，GPU×INT8）
 - [x] SBS 立体效果真机可见（静态图路径用户确认）
-
-### P4 摄像头
-
-- [ ] 相机预览方向正确（竖屏持机 upright，不横不倒）
-- [ ] 前后置切换、暂停/恢复、退后台再回来的稳定性
-- [ ] 相机路径的深度质量（16:9 预览拉伸到 280×518 的形变是否可感）
-- [ ] 相机 + 实时推理的发热（对比视频路径，深度帧率上限是否需默认收紧）
 - [ ] 逐帧过渡后的主观流畅度（P3.5 核心目标，待用户复测）
 - [ ] GPU FP16 耗时与深度质量（待测）
 - [ ] CPU×INT8 / CPU×FP32 耗时（待测，可能比弱 GPU 更快）
@@ -170,6 +147,5 @@ CameraX Preview ──▶ Surface(OES 纹理)   ← P4 相机路径，零拷贝�
 - 空洞内插（P0 的 inpaint）尚未移植到 GL；当前靠 CLAMP_TO_EDGE 拉伸，近景边缘可能有轻微涂抹
 - **OES 方向**：按 Grafika 约定推导（原始 `t=1` 对应视频顶部），部分机型/片源可能相反，故保留「上下翻转」开关而非硬编码
 - 视频旋转元数据（`KEY_ROTATION`）未处理：竖屏录制但带 90° 旋转标记的视频可能显示不正确，先用翻转开关兜底
-- 全屏观看：GL 铺满全屏 + 控制面板半透明覆盖层；全屏不强制方向（竖屏片源的平行眼观看本就是竖屏布局），SBS 双眼恒紧邻成对（P3.6 修复：按「一对眼」整体 contain 居中，不再按半屏独立适配）
-- 摄像头（P4）：CameraX 1.3.4 不含 camera-view；预览固定竖屏内容 + 16:9 请求；前后置切换会重新 bind（短暂黑屏）；手持横屏时相机内容按竖屏 letterbox 显示（不旋转）
+- 全屏观看：GL 铺满全屏 + 控制面板半透明覆盖层；进全屏自动转横屏（SBS 为 1440×1280 横宽高比，竖屏 letterbox 黑边大），`configChanges` 保证旋转不中断播放
 - 摄像头流在 P4；视频保存（≤1920×1080 + 3D 元数据）在 P5

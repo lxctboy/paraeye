@@ -1,7 +1,5 @@
 package com.paraeye.app
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -20,10 +18,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.paraeye.app.camera.CameraController
 import com.paraeye.app.depth.DepthBenchmark
 import com.paraeye.app.depth.DepthEstimator
 import com.paraeye.app.depth.DepthVisualizer
@@ -54,14 +49,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var playButton: Button
     private lateinit var controlPanel: View
     private lateinit var fullscreenButton: Button
-    private lateinit var cameraButton: Button
-    private lateinit var cameraSwitchButton: Button
 
     private var estimator: DepthEstimator? = null
     private var currentBitmap: Bitmap? = null
-
-    /** P4：CameraX 绑定层（摄像头实时 3D），null = 未启动 */
-    private var cameraController: CameraController? = null
 
     /** 推理固定跑在单线程上（LiteRT CompiledModel 非线程安全，且这样天然串行） */
     private val inferExecutor = Executors.newSingleThreadExecutor()
@@ -119,24 +109,14 @@ class MainActivity : ComponentActivity() {
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
         uri?.let {
-            stopCamera()
             stopVideo()
             loadBitmapFromUri(it)
         }
     }
 
     private val pickVideo = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
-        uri?.let {
-            stopCamera()
-            startVideo(it)
-        }
+        uri?.let { startVideo(it) }
     }
-
-    /** P4：相机运行时权限（CAMERA 是危险权限，清单声明不够） */
-    private val requestCameraPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startCamera() else statusText.text = "需要相机权限才能看实时 3D（可在系统设置里补授权）"
-        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,8 +131,6 @@ class MainActivity : ComponentActivity() {
         playButton = findViewById(R.id.playButton)
         controlPanel = findViewById(R.id.controlPanel)
         fullscreenButton = findViewById(R.id.fullscreenButton)
-        cameraButton = findViewById(R.id.cameraButton)
-        cameraSwitchButton = findViewById(R.id.cameraSwitchButton)
         glView = findViewById(R.id.glView)
 
         renderer = SbsRenderer()
@@ -167,17 +145,6 @@ class MainActivity : ComponentActivity() {
         renderer.onVideoError = { statusText.text = "视频失败：$it" }
         renderer.onVideoStarted = { w, h, dur ->
             statusText.text = "视频 ${w}x${h}，%.1f 秒，实时 3D 中".format(dur / 1_000_000f)
-        }
-        renderer.onCameraStarted = { w, h ->
-            val lens = if (cameraController?.lensFacing == CameraSelector.LENS_FACING_FRONT) "前置" else "后置"
-            statusText.text = "摄像头 ${w}x${h} · 实时 3D 中（$lens）"
-        }
-
-        cameraButton.setOnClickListener {
-            if (cameraController?.isActive == true) stopCamera() else ensureCameraPermissionAndStart()
-        }
-        cameraSwitchButton.setOnClickListener {
-            cameraController?.switchLens()
         }
 
         findViewById<Button>(R.id.pickButton).setOnClickListener {
@@ -407,55 +374,6 @@ class MainActivity : ComponentActivity() {
         glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
         playButton.text = "播放 / 暂停"
         playButton.isEnabled = false
-    }
-
-    // ---------------- 摄像头路径（P4） ----------------
-
-    private fun ensureCameraPermissionAndStart() {
-        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
-        if (granted) startCamera() else requestCameraPermission.launch(Manifest.permission.CAMERA)
-    }
-
-    private fun startCamera() {
-        // 摄像头与视频/图片互斥；videoST 在 GL 线程创建，就绪后再绑 CameraX
-        stopVideo()
-        videoMode = true
-        playing = true
-        playButton.text = "暂停播放"
-        playButton.isEnabled = true
-        glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        renderer.resetDepthSmoother()
-        cameraButton.text = "1c. 关闭摄像头"
-        cameraSwitchButton.isEnabled = true
-        statusText.text = "摄像头启动中..."
-        val controller = cameraController ?: CameraController(
-            activity = this,
-            renderer = renderer,
-            onStatus = { msg -> statusText.text = msg },
-        ).also { cameraController = it }
-        glView.queueEvent {
-            val st = renderer.cameraSurfaceTexture
-            if (st == null) {
-                runOnUiThread { statusText.text = "摄像头启动失败：GL 表面未就绪，稍后再试" }
-                return@queueEvent
-            }
-            runOnUiThread { controller.start(st) }
-        }
-    }
-
-    private fun stopCamera() {
-        cameraController?.stop()
-        if (videoMode) {
-            videoMode = false
-            playing = false
-            glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
-        }
-        playButton.text = "播放 / 暂停"
-        playButton.isEnabled = false
-        cameraButton.text = "1c. 摄像头（实时 3D）"
-        cameraSwitchButton.isEnabled = false
-        statusText.text = "摄像头已关闭"
     }
 
     // ---------------- 静态图路径 ----------------

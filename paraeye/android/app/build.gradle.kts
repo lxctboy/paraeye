@@ -80,10 +80,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.litert)
     implementation(libs.litert.gpu)
-    // P4 摄像头实时 3D：CameraX Preview 直接喂渲染器的 OES SurfaceTexture
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
     testImplementation(libs.junit)
 }
 

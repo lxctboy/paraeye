@@ -44,22 +44,6 @@
                 android:layout_marginTop="4dp"
                 android:text="1b. 选择视频（实时流水线）" />
 
-            <!-- P4 摄像头实时 3D：与视频/图片互斥，16:9 预览直接进 GL 管线 -->
-            <Button
-                android:id="@+id/cameraButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="1c. 摄像头（实时 3D）" />
-
-            <Button
-                android:id="@+id/cameraSwitchButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:enabled="false"
-                android:text="切换前/后置摄像头" />
-
             <Button
                 android:id="@+id/playButton"
                 android:layout_width="match_parent"

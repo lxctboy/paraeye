@@ -69,19 +69,6 @@ class SbsRenderer : GLSurfaceView.Renderer {
             return out
         }
 
-        /**
-         * 相机内容尺寸（P4）：CameraX 的 buffer 是 Sensor 方向（几乎总是横），
-         * 而 SurfaceTexture 变换矩阵只把内容旋到「设备自然方向」（竖屏 upright，
-         * 见 CameraX Preview 文档：SurfaceTexture 场景用 getTransformMatrix 到
-         * natural orientation，显示方向由消费方负责）。ParaEye 的相机观看固定
-         * 竖屏内容，故 FBO 恒取竖屏尺寸；横竖屏手持都由 SBS 整对的 letterbox 适配。
-         */
-        fun cameraContentSize(bufferW: Int, bufferH: Int): Pair<Int, Int> = when {
-            bufferW <= 0 || bufferH <= 0 -> 1 to 1
-            bufferW > bufferH -> bufferH to bufferW
-            else -> bufferW to bufferH
-        }
-
         /** depthToR8 的零分配版本（渲染线程每帧复用） */
         fun depthToR8Into(normalized: FloatArray, out: ByteArray) {
             for (i in normalized.indices) {
@@ -204,24 +191,6 @@ void main() {
     var onVideoError: ((String) -> Unit)? = null
     var onVideoStarted: ((Int, Int, Long) -> Unit)? = null
 
-    /** 相机预览就绪（内容尺寸已定，P4）：用于状态栏提示 */
-    var onCameraStarted: ((Int, Int) -> Unit)? = null
-
-    // ---- 相机路径（P4）----
-    /** 相机模式：videoST 直接收 CameraX 预览帧，绕过 MediaCodec/VideoDecoder */
-    @Volatile var cameraMode = false
-
-    /** 相机 buffer 尺寸（Sensor 方向，来自 SurfaceRequest.resolution），UI 线程写、GL 线程读 */
-    @Volatile private var camBufW = 0
-    @Volatile private var camBufH = 0
-
-    /** GL 线程在 onSurfaceCreated 发布；相机绑定时从 UI 线程读取 */
-    @Volatile var cameraSurfaceTexture: SurfaceTexture? = null
-        private set
-
-    /** 暂停（相机路径：停止消费帧，预览停在最后一帧；视频路径同时透传给解码器） */
-    @Volatile private var paused = false
-
     // ---- 统计（UI 线程轮询）----
     @Volatile var videoFps = 0f
     @Volatile var depthFps = 0f
@@ -338,35 +307,7 @@ void main() {
         pendingStop = true
     }
 
-    // ---- 相机路径（P4）----
-
-    /** 开启相机模式：videoST 直接收 CameraX 预览帧（CameraController 绑定成功后调用） */
-    fun startCamera() {
-        pendingStart = null
-        pendingStop = false
-        cameraMode = true
-        paused = false
-        videoInfoSent = false
-        hasColor = false
-        hasDepth = false
-        depthTarget = null
-        smoother.reset()
-    }
-
-    /** 关闭相机模式（解绑 CameraX 时调用；复用 pendingStop 清场） */
-    fun stopCamera() {
-        cameraMode = false
-        pendingStop = true
-    }
-
-    /** 相机 buffer 尺寸（SurfaceRequest 回调里调用，任意线程安全） */
-    fun setCameraBufferSize(w: Int, h: Int) {
-        camBufW = w
-        camBufH = h
-    }
-
     fun setPaused(paused: Boolean) {
-        this.paused = paused
         videoDecoder?.paused = paused
     }
 
@@ -451,8 +392,6 @@ void main() {
         videoST = SurfaceTexture(videoTex).apply {
             setOnFrameAvailableListener({ frameAvailable.set(true) }, Handler(Looper.getMainLooper()))
         }
-        // 发布给相机路径：CameraX Preview 直接写这个 SurfaceTexture（P4）
-        cameraSurfaceTexture = videoST
 
         hasColor = false
         hasDepth = false
@@ -565,7 +504,6 @@ void main() {
         pendingStart?.let { (ctx, uri) ->
             pendingStart = null
             videoDecoder?.release()
-            paused = false
             val st = videoST ?: return
             videoInfoSent = false
             videoDecoder = VideoDecoder(
@@ -580,46 +518,26 @@ void main() {
 
     /** 有新视频帧则归一化到 displayTex，返回是否是新帧 */
     private fun consumeVideoFrame(): Boolean {
+        val decoder = videoDecoder ?: return false
         val st = videoST ?: return false
-        // 相机暂停：不消费帧，frameAvailable 保持 true，恢复后取最新一帧
-        if (paused) return false
         if (!frameAvailable.compareAndSet(true, false)) return false
 
         runCatching { st.updateTexImage() }.getOrElse { return false }
         st.getTransformMatrix(texMtx)
 
-        val decoder = videoDecoder
-        if (decoder != null) {
-            val w = decoder.videoWidth
-            val h = decoder.videoHeight
-            if (w <= 0 || h <= 0) return false
-            if (w != srcW || h != srcH || displayFbo == 0) {
-                srcW = w
-                srcH = h
-                ensureDisplayTex(w, h)
-            }
-        } else if (cameraMode) {
-            if (camBufW <= 0 || camBufH <= 0) return false
-            // 相机路径：FBO 恒取竖屏内容尺寸（变换矩阵只负责旋到自然方向，
-            // 见 cameraContentSize 注释）；内容宽高比 = 预览宽高比，后续管线不变
-            val (cw, ch) = cameraContentSize(camBufW, camBufH)
-            if (cw != srcW || ch != srcH || displayFbo == 0) {
-                srcW = cw
-                srcH = ch
-                ensureDisplayTex(cw, ch)
-            }
-        } else {
-            return false
+        val w = decoder.videoWidth
+        val h = decoder.videoHeight
+        if (w <= 0 || h <= 0) return false
+        if (w != srcW || h != srcH || displayFbo == 0) {
+            srcW = w
+            srcH = h
+            ensureDisplayTex(w, h)
         }
         if (displayFbo == 0) return false   // FBO 创建失败（驱动不支持），放弃视频路径
         if (!videoInfoSent) {
             videoInfoSent = true
-            if (decoder != null) {
-                val dur = decoder.durationUs
-                mainPost { onVideoStarted?.invoke(srcW, srcH, dur) }
-            } else {
-                mainPost { onCameraStarted?.invoke(srcW, srcH) }
-            }
+            val dur = decoder.durationUs
+            mainPost { onVideoStarted?.invoke(w, h, dur) }
         }
 
         // OES -> displayTex
