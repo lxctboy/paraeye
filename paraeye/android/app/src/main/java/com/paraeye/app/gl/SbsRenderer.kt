@@ -218,7 +218,7 @@ void main() {
     private var modelFbo = 0
     private var videoTex = 0
     private var videoST: SurfaceTexture? = null
-    private var videoDecoder: VideoDecoder? = null
+    @Volatile private var videoDecoder: VideoDecoder? = null
     private val texMtx = FloatArray(16)
     private val frameAvailable = AtomicBoolean(false)
 
@@ -317,6 +317,17 @@ void main() {
     }
 
     val isVideoActive: Boolean get() = videoDecoder != null
+
+    /** 当前播放位置（微秒）；非视频态返回 0 */
+    val videoPositionUs: Long get() = videoDecoder?.positionUs ?: 0L
+
+    /** 视频总时长（微秒）；非视频态返回 0 */
+    val videoDurationUs: Long get() = videoDecoder?.durationUs ?: 0L
+
+    /** 跳转（毫秒，GOP 内对齐）；非视频态为空操作 */
+    fun seekToMs(ms: Long) {
+        videoDecoder?.seekToMs(ms)
+    }
 
     /** GL 线程：上传 UI 线程提交的数据 */
     private fun uploadPending() {

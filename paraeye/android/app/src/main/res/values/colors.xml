@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 播放器暗色系：画面是主角，UI 只做半透明遮罩与细线条 -->
+    <color name="bg_root">#FF07080B</color>
+    <color name="accent">#FF6E8BFF</color>
+    <color name="accent_dim">#FF4C63C8</color>
+    <color name="on_accent">#FFFFFFFF</color>
+    <color name="chip_idle">#26FFFFFF</color>
+    <color name="text_primary">#FFF3F5F9</color>
+    <color name="text_secondary">#FFA6AEBD</color>
+    <color name="panel">#F212141B</color>
+    <color name="card">#FF1B1E27</color>
+    <color name="scrim_strong">#E60A0B10</color>
+    <color name="scrim_soft">#990A0B10</color>
+    <color name="divider">#1FFFFFFF</color>
+</resources>

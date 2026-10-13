@@ -17,7 +17,8 @@ import android.view.Surface
  * - 输出走 Surface（OES 纹理），全程不经过 CPU 拷贝，这是移动端能把解码压到 5~10ms 的前提；
  * - 解码循环跑在独立 HandlerThread 上，与 GL 线程解耦；SurfaceTexture 由 GL 线程持有；
  * - 按 presentationTimeUs 做节奏控制（相对首帧 PTS 对齐墙钟），避免"一口气解完"；
- * - 到末尾自动 seek 回 0 循环播放；pause 时不 release 输出缓冲，画面停在最后一帧。
+ * - 到末尾自动 seek 回 0 循环播放；pause 时不 release 输出缓冲，画面停在最后一帧；
+ * - 对外暴露 positionUs 与 seekToMs()，供播放器进度条使用（GOP 内对齐，误差一个 GOP）。
  */
 class VideoDecoder(
     private val context: Context,
@@ -38,6 +39,13 @@ class VideoDecoder(
     @Volatile var durationUs = 0L
         private set
 
+    /** 当前播放位置（微秒，播放器进度条用；seek 后为近似值，误差一个 GOP） */
+    @Volatile var positionUs = 0L
+        private set
+
+    /** UI 线程写入的 seek 请求（微秒，-1 = 无）；解码循环每轮消费 */
+    @Volatile private var pendingSeekUs = -1L
+
     private var thread: HandlerThread? = null
     private var extractor: MediaExtractor? = null
     private var codec: MediaCodec? = null
@@ -47,6 +55,14 @@ class VideoDecoder(
         running = true
         thread = HandlerThread("paraeye-decode").apply { start() }
         Handler(thread!!.looper).post { decodeLoop() }
+    }
+
+    /**
+     * 跳转到指定位置（毫秒）。线程安全：仅置位请求，实际 flush/seek 由解码线程执行。
+     * 落在最近的关键帧之前（GOP 内对齐），恢复后按新位置重锚墙钟节奏。
+     */
+    fun seekToMs(ms: Long) {
+        pendingSeekUs = ms.coerceAtLeast(0L) * 1000L
     }
 
     fun release() {
@@ -131,10 +147,24 @@ class VideoDecoder(
         var inputDone = false
         var startPts = -1L
         var startNano = 0L
+        // 位置基准：loop 回 0 或 seek 后重锚，positionUs = (pts - startPts) + baseUs
+        var baseUs = 0L
 
         while (running) {
             if (paused) {
                 Thread.sleep(20)
+                continue
+            }
+
+            // UI 发来的 seek：先刷掉解码器内部状态，再回到目标位置前最近的关键帧
+            val seekUs = pendingSeekUs
+            if (seekUs >= 0) {
+                pendingSeekUs = -1
+                decoder.flush()
+                inputDone = false
+                ex.seekTo(seekUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                startPts = -1L
+                baseUs = seekUs
                 continue
             }
 
@@ -168,6 +198,7 @@ class VideoDecoder(
                     startPts = pts
                     startNano = System.nanoTime()
                 }
+                positionUs = (pts - startPts + baseUs).coerceIn(0L, maxOf(durationUs, pts))
                 val targetMs = (pts - startPts) / 1000L
                 val elapsedMs = (System.nanoTime() - startNano) / 1_000_000L
                 val delay = targetMs - elapsedMs
@@ -184,6 +215,7 @@ class VideoDecoder(
                 ex.seekTo(0L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
                 inputDone = false
                 startPts = -1L
+                baseUs = 0L
             }
         }
     }

@@ -10,8 +10,8 @@ import android.os.Looper
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
-import android.widget.Button
 import android.widget.CheckBox
+import android.widget.ImageButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
@@ -25,30 +25,40 @@ import com.paraeye.app.depth.DepthVisualizer
 import com.paraeye.app.depth.ImagePreprocessor
 import com.paraeye.app.gl.FrameDepthConsumer
 import com.paraeye.app.gl.SbsRenderer
+import com.paraeye.app.ui.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 /**
- * ParaEye P1/P2/P3 验证壳：
- *  - P1：单帧 LiteRT 推理 + 基准计时
- *  - P2：GL 视图合成（Full-SBS / 伪彩深度）+ 视差滑块
- *  - P3：本地视频实时流水线（MediaCodec 硬解 → GPU 归一化/降采样 → 异步推理 → SBS）
+ * ParaEye 播放器壳（v1.1.0 播放器化重构）：
+ *  - 画面层：GLSurfaceView 常驻全屏，上面浮三层 chrome（标题/控制条/性能浮层）
+ *  - 播放层：进度条 + 拖动 seek（VideoDecoder GOP 内对齐）、大播放键、循环播放
+ *  - 设置层：底部抽屉（视差/显示内容/观看方式/深度帧率上限/推理后端）
+ *  - 来源：本地视频走实时流水线（MediaCodec→深度→SBS），本地图片走单帧推理
  */
 class MainActivity : ComponentActivity() {
 
+    private lateinit var topBar: View
+    private lateinit var bottomBar: View
+    private lateinit var statsChip: TextView
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
+    private lateinit var modelText: TextView
     private lateinit var dispLabel: TextView
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: SbsRenderer
+    private lateinit var centerStage: View
+    private lateinit var centerHint: TextView
+    private lateinit var bigPlayButton: ImageButton
+    private lateinit var playButton: ImageButton
+    private lateinit var fullscreenButton: ImageButton
+    private lateinit var settingsButton: ImageButton
+    private lateinit var settingsPanel: View
+    private lateinit var positionSeek: SeekBar
+    private lateinit var timeText: TextView
     private lateinit var acceleratorGroup: RadioGroup
-    private lateinit var modelGroup: RadioGroup
-    private lateinit var runButton: Button
-    private lateinit var playButton: Button
-    private lateinit var controlPanel: View
-    private lateinit var fullscreenButton: Button
 
     private var estimator: DepthEstimator? = null
     private var currentBitmap: Bitmap? = null
@@ -67,8 +77,17 @@ class MainActivity : ComponentActivity() {
     @Volatile private var videoMode = false
     @Volatile private var playing = false
 
-    /** 全屏观看（隐藏控制面板 + 沉浸式系统栏；方向跟随传感器） */
+    /** chrome（标题栏 + 控制条 + 性能浮层）是否可见；点画面切换 */
+    private var chromeVisible = true
+
+    /** 沉浸式全屏（隐藏系统栏）；方向仍跟随传感器——竖屏片源裸眼观看本就是竖屏布局 */
     private var fullscreen = false
+
+    /** 设置抽屉是否展开 */
+    private var settingsOpen = false
+
+    /** 进度条拖动中：暂停用解码位置覆盖 UI */
+    private var seeking = false
 
     /**
      * 深度帧率上限（FPS，0 = 不限）。发热控制的关键旋钮：
@@ -82,28 +101,23 @@ class MainActivity : ComponentActivity() {
     /** 上一次派发推理的时刻（GL 线程写、GL 线程读） */
     @Volatile private var lastInferAtMs = 0L
 
-    private val statsHandler = Handler(Looper.getMainLooper())
-    private val statsTask = object : Runnable {
+    /** 单帧模式的基准结果（图片路径跑完后显示） */
+    private var lastBench: DepthBenchmark.Result? = null
+
+    private val versionName: String by lazy {
+        runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val hideChromeTask = Runnable { hideChrome() }
+
+    /** 250ms 心跳：推进进度条 + 刷新性能浮层 */
+    private val tickTask = object : Runnable {
         override fun run() {
-            if (videoMode) {
-                val acc = buildString {
-                    if (useGpu && estimator?.gpuFallback == true) {
-                        // GPU delegate 编译不了自导出模型，已回退 CPU（见 DepthEstimator.gpuFallback）
-                        append("GPU→CPU（不受支持）")
-                    } else {
-                        append(if (useGpu) "GPU" else "CPU")
-                        if (useGpu && useFp16) append("/FP16")
-                    }
-                }
-                statsText.text = buildString {
-                    appendLine("实时流水线 (${modelType.label} / $acc" +
-                        if (depthFpsCap > 0) " · 深度≤${depthFpsCap}FPS" else "" + ")")
-                    appendLine("视频帧率: %.1f FPS".format(renderer.videoFps))
-                    appendLine("深度更新: %.1f FPS".format(renderer.depthFps))
-                    appendLine("单帧推理: %.1f ms".format(lastInferMs))
-                }
-            }
-            statsHandler.postDelayed(this, 500)
+            updateProgress()
+            updateStatsChip()
+            handler.postDelayed(this, 250)
         }
     }
 
@@ -121,168 +135,172 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        statusText = findViewById(R.id.statusText)
-        statsText = findViewById(R.id.statsText)
-        dispLabel = findViewById(R.id.dispLabel)
-        acceleratorGroup = findViewById(R.id.acceleratorGroup)
-        modelGroup = findViewById(R.id.modelGroup)
-        runButton = findViewById(R.id.runButton)
-        playButton = findViewById(R.id.playButton)
-        controlPanel = findViewById(R.id.controlPanel)
-        fullscreenButton = findViewById(R.id.fullscreenButton)
-        glView = findViewById(R.id.glView)
+        bindViews()
 
         renderer = SbsRenderer()
         glView.setEGLContextClientVersion(2)
         // 保留 EGL 上下文：否则 onPause/onResume 会重建 GL 资源，
-        // 导致解码器持有的 SurfaceTexture 变成悬空引用（P3 视频路径必需）
+        // 导致解码器持有的 SurfaceTexture 变成悬空引用（视频路径必需）
         glView.setPreserveEGLContextOnPause(true)
         glView.setRenderer(renderer)
         glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
         renderer.requestRender = { glView.requestRender() }
         renderer.depthConsumer = frameConsumer
-        renderer.onVideoError = { statusText.text = "视频失败：$it" }
+        renderer.onVideoError = { msg -> setStatus("视频失败：$msg") }
         renderer.onVideoStarted = { w, h, dur ->
-            statusText.text = "视频 ${w}x${h}，%.1f 秒，实时 3D 中".format(dur / 1_000_000f)
+            setStatus("已加载 ${w}×${h} · %.1f 秒 · 实时 3D 中".format(dur / 1_000_000f))
         }
 
-        findViewById<Button>(R.id.pickButton).setOnClickListener {
-            pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        }
-        findViewById<Button>(R.id.pickVideoButton).setOnClickListener {
+        wirePlayerControls()
+        wireSettings()
+        wireGesture()
+
+        modelText.text = "模型 ${modelType.label} · ${ImagePreprocessor.MODEL_W}×${ImagePreprocessor.MODEL_H} · v$versionName"
+        setStatus(getString(R.string.hint_pick_source))
+        refreshIdleHints()
+    }
+
+    private fun bindViews() {
+        topBar = findViewById(R.id.topBar)
+        bottomBar = findViewById(R.id.bottomBar)
+        statsChip = findViewById(R.id.statsChip)
+        statusText = findViewById(R.id.statusText)
+        statsText = findViewById(R.id.statsText)
+        modelText = findViewById(R.id.modelText)
+        dispLabel = findViewById(R.id.dispLabel)
+        glView = findViewById(R.id.glView)
+        centerStage = findViewById(R.id.centerStage)
+        centerHint = findViewById(R.id.centerHint)
+        bigPlayButton = findViewById(R.id.bigPlayButton)
+        playButton = findViewById(R.id.playButton)
+        fullscreenButton = findViewById(R.id.fullscreenButton)
+        settingsButton = findViewById(R.id.settingsButton)
+        settingsPanel = findViewById(R.id.settingsPanel)
+        positionSeek = findViewById(R.id.positionSeek)
+        timeText = findViewById(R.id.timeText)
+        acceleratorGroup = findViewById(R.id.acceleratorGroup)
+    }
+
+    // ---------------- 播放控制 ----------------
+
+    private fun wirePlayerControls() {
+        findViewById<TextView>(R.id.pickVideoButton).setOnClickListener {
             pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
         }
-        runButton.setOnClickListener { runSingleFrame() }
-
-        playButton.setOnClickListener {
-            playing = !playing
-            renderer.setPaused(!playing)
-            playButton.text = if (playing) "暂停播放" else "继续播放"
+        findViewById<TextView>(R.id.pickButton).setOnClickListener {
+            pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
+        findViewById<TextView>(R.id.runButton).setOnClickListener { runSingleFrame() }
 
-        acceleratorGroup.setOnCheckedChangeListener { _, id ->
-            useGpu = (id == R.id.radioGpu)
-            onConfigChanged()
-        }
-        modelGroup.setOnCheckedChangeListener { _, _ ->
-            modelType = DepthEstimator.ModelType.INT8
-            onConfigChanged()
-        }
-
-        val seek = findViewById<SeekBar>(R.id.dispSeek)
-        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                val ratio = progress / 1000f
-                renderer.maxDispRatio = ratio
-                dispLabel.text = "当前：%.1f%%%s".format(
-                    ratio * 100f,
-                    if (progress == 10) "（P0 定档，默认）" else ""
-                )
-                glView.requestRender()
-            }
-
-            override fun onStartTrackingTouch(sb: SeekBar?) = Unit
-            override fun onStopTrackingTouch(sb: SeekBar?) = Unit
-        })
-
-        findViewById<RadioGroup>(R.id.viewModeGroup)
-            .setOnCheckedChangeListener { _, checkedId ->
-                renderer.mode = if (checkedId == R.id.radioModeSbs) {
-                    SbsRenderer.MODE_SBS
-                } else {
-                    SbsRenderer.MODE_DEPTH
-                }
-                glView.requestRender()
-            }
-
-        findViewById<CheckBox>(R.id.swapCheck)
-            .setOnCheckedChangeListener { _, isChecked ->
-                renderer.swapLr = isChecked
-                glView.requestRender()
-            }
-
-        findViewById<CheckBox>(R.id.fp16Check)
-            .setOnCheckedChangeListener { _, isChecked ->
-                useFp16 = isChecked
-                onConfigChanged()
-            }
-
-        findViewById<CheckBox>(R.id.flipCheck)
-            .setOnCheckedChangeListener { _, isChecked ->
-                renderer.videoFlipY = isChecked
-            }
-
-        findViewById<RadioGroup>(R.id.depthCapGroup)
-            .setOnCheckedChangeListener { _, checkedId ->
-                depthFpsCap = when (checkedId) {
-                    R.id.radioCap5 -> 5
-                    R.id.radioCap4 -> 4
-                    R.id.radioCap3 -> 3
-                    R.id.radioCap2 -> 2
-                    else -> 0 // 不限
-                }
-            }
+        val playToggle = View.OnClickListener { togglePlay() }
+        playButton.setOnClickListener(playToggle)
+        bigPlayButton.setOnClickListener(playToggle)
 
         fullscreenButton.setOnClickListener { setFullscreen(!fullscreen) }
+        settingsButton.setOnClickListener { toggleSettings() }
 
-        // 双击画面切换全屏（控制面板遮住的地方用按钮，露出的画面区域用双击）
-        val tapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                setFullscreen(!fullscreen)
-                return true
+        positionSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val durMs = renderer.videoDurationUs / 1000
+                if (durMs > 0) {
+                    timeText.text = TimeFormat.position(durMs * progress / 1000, durMs)
+                }
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                seeking = true
+                handler.removeCallbacks(hideChromeTask)
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                seeking = false
+                val durMs = renderer.videoDurationUs / 1000
+                if (durMs > 0) sb?.let { renderer.seekToMs(durMs * it.progress / 1000) }
             }
         })
-        glView.setOnTouchListener { _, event -> tapDetector.onTouchEvent(event) }
-
-        statusText.text = "选图片做单帧验证，或选视频跑实时流水线。SBS 请用平行眼观看"
     }
 
-    override fun onResume() {
-        super.onResume()
-        glView.onResume()
-        // 系统栏可能因回桌面/通知栏重现，全屏状态下每次回前台补一次沉浸式
-        if (fullscreen) applyImmersive(true)
-        if (videoMode) renderer.setPaused(!playing)
-        statsHandler.post(statsTask)
+    private fun togglePlay() {
+        if (!videoMode) {
+            pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+            return
+        }
+        playing = !playing
+        renderer.setPaused(!playing)
+        syncPlayIcons()
+        refreshIdleHints()
+        if (playing) scheduleAutoHide() else showChrome(autoHide = false)
     }
 
-    override fun onPause() {
-        statsHandler.removeCallbacks(statsTask)
-        renderer.setPaused(true)
-        glView.onPause()
-        super.onPause()
+    /** 播放/暂停图标与可用态；暂停时按钮要一直留在屏幕上 */
+    private fun syncPlayIcons() {
+        val icon = if (playing) R.drawable.ic_pause else R.drawable.ic_play
+        playButton.setImageResource(icon)
+        playButton.isEnabled = videoMode
+        playButton.alpha = if (videoMode) 1f else 0.4f
     }
 
-    override fun onDestroy() {
-        glView.queueEvent { renderer.releaseVideo() }
-        inferExecutor.shutdown()
-        estimator?.close()
-        estimator = null
-        super.onDestroy()
+    /** 空态提示与大播放键的可见性 */
+    private fun refreshIdleHints() {
+        centerHint.visibility = if (videoMode) View.GONE else View.VISIBLE
+        bigPlayButton.visibility = if (videoMode && !playing) View.VISIBLE else View.GONE
     }
 
-    private fun onConfigChanged() {
-        // 换模型/加速器后时域平滑的历史深度失效
-        renderer.resetDepthSmoother()
-        // 允许再次提示 GPU 回退（用户可能切走了又切回 GPU）
-        gpuFallbackNotified = false
+    // ---------------- chrome 显示策略 ----------------
+
+    /** 单击画面：显示/隐藏控制条（播放器标准手势） */
+    private fun toggleChrome() {
+        if (chromeVisible) hideChrome() else showChrome()
     }
 
-    // ---------------- 全屏观看 ----------------
+    private fun showChrome(autoHide: Boolean = true) {
+        chromeVisible = true
+        topBar.visibility = View.VISIBLE
+        bottomBar.visibility = View.VISIBLE
+        if (videoMode) statsChip.visibility = View.VISIBLE
+        fullscreenButton.setImageResource(
+            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+        )
+        if (autoHide) scheduleAutoHide() else handler.removeCallbacks(hideChromeTask)
+    }
 
-    /**
-     * 切换全屏：隐藏控制面板 + 沉浸式系统栏。
-     * 不强制 orientation：SBS 片源以竖屏为主，平行眼裸眼观看就是竖屏布局；
-     * P3.6 真机反馈——强制横屏后两眼之间被撑出黑带、无法融合出 3D。
-     * 方向跟随传感器，横竖屏下渲染器都会把左右眼贴成紧邻的一对。
-     */
+    private fun hideChrome() {
+        chromeVisible = false
+        topBar.visibility = View.GONE
+        bottomBar.visibility = View.GONE
+        statsChip.visibility = View.GONE
+    }
+
+    /** 只在「正在播放视频」时自动隐藏，暂停/空态/抽屉打开时保持可见 */
+    private fun scheduleAutoHide() {
+        handler.removeCallbacks(hideChromeTask)
+        if (videoMode && playing && !settingsOpen) {
+            handler.postDelayed(hideChromeTask, 3_500)
+        }
+    }
+
+    private fun toggleSettings() {
+        settingsOpen = !settingsOpen
+        settingsPanel.visibility = if (settingsOpen) View.VISIBLE else View.GONE
+        if (settingsOpen) {
+            showChrome(autoHide = false)
+            settingsButton.alpha = 0.6f
+        } else {
+            settingsButton.alpha = 1f
+            scheduleAutoHide()
+        }
+    }
+
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
-        controlPanel.visibility = if (on) View.GONE else View.VISIBLE
-        fullscreenButton.text = if (on) "退出全屏" else "3. 全屏观看（双击画面退出）"
         applyImmersive(on)
+        if (on) {
+            // 进全屏先收起来，点画面唤出（与播放器一致）
+            hideChrome()
+        } else {
+            showChrome(autoHide = false)
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -299,6 +317,172 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun wireGesture() {
+        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                toggleChrome()
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                setFullscreen(!fullscreen)
+                return true
+            }
+        })
+        glView.setOnTouchListener { _, event -> detector.onTouchEvent(event) }
+    }
+
+    // ---------------- 设置抽屉 ----------------
+
+    private fun wireSettings() {
+        val dispSeek = findViewById<SeekBar>(R.id.dispSeek)
+        dispSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                val ratio = progress / 1000f
+                renderer.maxDispRatio = ratio
+                dispLabel.text = "当前 %.1f%%%s".format(
+                    ratio * 100f,
+                    if (progress == 10) " · P0 定档默认" else ""
+                )
+                glView.requestRender()
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) = Unit
+            override fun onStopTrackingTouch(sb: SeekBar?) = Unit
+        })
+        dispLabel.text = "当前 1.0% · P0 定档默认"
+
+        findViewById<RadioGroup>(R.id.viewModeGroup).setOnCheckedChangeListener { _, checkedId ->
+            renderer.mode = if (checkedId == R.id.radioModeSbs) {
+                SbsRenderer.MODE_SBS
+            } else {
+                SbsRenderer.MODE_DEPTH
+            }
+            glView.requestRender()
+        }
+
+        findViewById<CheckBox>(R.id.swapCheck).setOnCheckedChangeListener { _, checked ->
+            renderer.swapLr = checked
+            glView.requestRender()
+        }
+
+        findViewById<CheckBox>(R.id.flipCheck).setOnCheckedChangeListener { _, checked ->
+            renderer.videoFlipY = checked
+        }
+
+        findViewById<CheckBox>(R.id.fp16Check).setOnCheckedChangeListener { _, checked ->
+            useFp16 = checked
+            onConfigChanged()
+        }
+
+        findViewById<RadioGroup>(R.id.depthCapGroup).setOnCheckedChangeListener { _, checkedId ->
+            depthFpsCap = when (checkedId) {
+                R.id.radioCap5 -> 5
+                R.id.radioCap4 -> 4
+                R.id.radioCap3 -> 3
+                R.id.radioCap2 -> 2
+                else -> 0 // 不限
+            }
+        }
+
+        acceleratorGroup.setOnCheckedChangeListener { _, id ->
+            useGpu = (id == R.id.radioGpu)
+            onConfigChanged()
+        }
+    }
+
+    private fun onConfigChanged() {
+        // 换模型/加速器后时域平滑的历史深度失效
+        renderer.resetDepthSmoother()
+        // 允许再次提示 GPU 回退（用户可能切走了又切回 GPU）
+        gpuFallbackNotified = false
+        // 图片模式下换后端要重新推理才生效
+        if (!videoMode && currentBitmap != null) runSingleFrame()
+    }
+
+    // ---------------- 进度与性能浮层 ----------------
+
+    private fun updateProgress() {
+        if (!videoMode) {
+            positionSeek.progress = 0
+            timeText.text = "图片 · 单帧"
+            return
+        }
+        val durUs = renderer.videoDurationUs
+        val posUs = renderer.videoPositionUs
+        if (durUs <= 0) {
+            timeText.text = "--:-- / --:--"
+            return
+        }
+        if (!seeking) {
+            positionSeek.progress = ((posUs * 1000) / durUs).toInt().coerceIn(0, 1000)
+            timeText.text = TimeFormat.position(posUs / 1000, durUs / 1000)
+        }
+    }
+
+    private fun updateStatsChip() {
+        if (!videoMode) {
+            // 图片模式：单帧基准（跑完才有数据）
+            val bench = lastBench
+            if (bench != null && chromeVisible) {
+                statsChip.text = "单帧\n%.0f ms\n%s".format(bench.avgMs, modelType.label)
+                statsChip.visibility = View.VISIBLE
+            } else if (statsChip.visibility != View.GONE) {
+                statsChip.visibility = View.GONE
+            }
+            return
+        }
+        val acc = when {
+            useGpu && estimator?.gpuFallback == true -> "CPU"
+            useGpu -> "GPU"
+            else -> "CPU"
+        }
+        statsChip.text = "%.1f FPS\n深度 %.1f\n%.0f ms".format(
+            renderer.videoFps, renderer.depthFps, lastInferMs
+        ) + "\n$acc" + (if (depthFpsCap > 0) " ·≤$depthFpsCap" else "")
+        if (chromeVisible && statsChip.visibility != View.VISIBLE) {
+            statsChip.visibility = View.VISIBLE
+        } else if (!chromeVisible && statsChip.visibility != View.GONE) {
+            statsChip.visibility = View.GONE
+        }
+    }
+
+    private fun setStatus(text: String) {
+        statusText.text = text
+    }
+
+    // ---------------- 生命周期 ----------------
+
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+        // 系统栏可能因回桌面/通知栏重现，全屏状态下每次回前台补一次沉浸式
+        if (fullscreen) applyImmersive(true)
+        if (videoMode) renderer.setPaused(!playing)
+        handler.post(tickTask)
+        if (videoMode && playing) scheduleAutoHide()
+    }
+
+    override fun onPause() {
+        handler.removeCallbacks(tickTask)
+        handler.removeCallbacks(hideChromeTask)
+        renderer.setPaused(true)
+        glView.onPause()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        glView.queueEvent { renderer.releaseVideo() }
+        inferExecutor.shutdown()
+        estimator?.close()
+        estimator = null
+        super.onDestroy()
+    }
+
+    // ---------------- 深度推理 ----------------
+
     private val frameConsumer = object : FrameDepthConsumer {
         override val busy: Boolean
             get() = inflight ||
@@ -308,7 +492,7 @@ class MainActivity : ComponentActivity() {
                     System.currentTimeMillis() - lastInferAtMs < 1000L / depthFpsCap)
 
         override fun onFrameForDepth(rgba: ByteArray) {
-            // P3.5：rgba 来自渲染器双缓冲池，无需拷贝；用完 recycle 归还
+            // rgba 来自渲染器双缓冲池，无需拷贝；用完 recycle 归还
             lastInferAtMs = System.currentTimeMillis()
             inflight = true
             inferExecutor.execute {
@@ -320,10 +504,10 @@ class MainActivity : ComponentActivity() {
                     )
                     val raw = est.inferNchw(nchwBuf)
                     lastInferMs = (System.nanoTime() - t0) / 1_000_000f
-                    // 归一化后的目标深度交给渲染器，由其逐帧 EMA 过渡（治 6FPS 跳变）
+                    // 归一化后的目标深度交给渲染器，由其逐帧 EMA 过渡（治低帧率跳变）
                     renderer.submitDepthTarget(DepthVisualizer.normalize(raw.depth))
                 } catch (e: Exception) {
-                    runOnUiThread { statusText.text = "推理失败：${e.message}" }
+                    runOnUiThread { setStatus("推理失败：${e.message}") }
                 } finally {
                     inflight = false
                     recycle(rgba)
@@ -346,7 +530,7 @@ class MainActivity : ComponentActivity() {
         if (est.gpuFallback && !gpuFallbackNotified) {
             gpuFallbackNotified = true
             runOnUiThread {
-                statusText.text = "GPU 不受支持（自导出模型含 GPU delegate 不支持的算子），已回退 CPU"
+                setStatus("GPU 不受支持（自导出模型含 GPU delegate 不支持的算子），已回退 CPU")
             }
         }
         return est
@@ -356,14 +540,17 @@ class MainActivity : ComponentActivity() {
 
     private fun startVideo(uri: Uri) {
         currentBitmap = null
+        lastBench = null
         videoMode = true
         playing = true
         renderer.resetDepthSmoother()
-        playButton.text = "暂停播放"
-        playButton.isEnabled = true
+        syncPlayIcons()
+        refreshIdleHints()
+        showChrome()
         glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         renderer.startVideo(this, uri)
-        statusText.text = "视频加载中..."
+        setStatus("视频加载中…")
+        statsText.text = ""
     }
 
     private fun stopVideo() {
@@ -372,8 +559,9 @@ class MainActivity : ComponentActivity() {
         playing = false
         renderer.stopVideo()
         glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
-        playButton.text = "播放 / 暂停"
-        playButton.isEnabled = false
+        syncPlayIcons()
+        refreshIdleHints()
+        updateProgress()
     }
 
     // ---------------- 静态图路径 ----------------
@@ -382,14 +570,16 @@ class MainActivity : ComponentActivity() {
         try {
             val raw = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
             if (raw == null) {
-                statusText.text = "图片解码失败"
+                setStatus("图片解码失败")
                 return
             }
             // 大图降采样到 2048 长边，避免 OOM
             currentBitmap = downscale(raw, 2048)
-            statusText.text = "已加载图片 ${currentBitmap!!.width}x${currentBitmap!!.height}，点「生成 3D」"
+            showChrome(autoHide = false)
+            // 播放器化后不再让用户多点一次，选完图直接出 3D
+            runSingleFrame()
         } catch (e: Exception) {
-            statusText.text = "加载失败: ${e.message}"
+            setStatus("加载失败：${e.message}")
         }
     }
 
@@ -404,15 +594,16 @@ class MainActivity : ComponentActivity() {
 
     private fun runSingleFrame() {
         if (videoMode) {
-            statusText.text = "实时模式占用推理线程，请先选一张图片切回单帧模式"
+            setStatus("实时模式占用推理线程，请先选一张图片切回单帧模式")
             return
         }
         val bitmap = currentBitmap ?: run {
-            statusText.text = "请先选择图片（实时流请选视频）"
+            setStatus("请先选择图片（实时流请选视频）")
             return
         }
+        val acc = if (useGpu) "GPU" else "CPU"
         lifecycleScope.launch {
-            statusText.text = "推理中（${modelType.label} / ${if (useGpu) "GPU" else "CPU"}）..."
+            setStatus("推理中（${modelType.label} / $acc）…")
             try {
                 val (result, bench) = withContext(Dispatchers.Default) {
                     val est = ensureEstimator()
@@ -420,19 +611,20 @@ class MainActivity : ComponentActivity() {
                     val b = DepthBenchmark.run(est, bitmap)
                     depth to b
                 }
+                lastBench = bench
                 val r8 = SbsRenderer.depthToR8(DepthVisualizer.normalize(result.depth))
                 renderer.submitFrame(bitmap, r8)
                 glView.requestRender()
 
                 statsText.text = buildString {
-                    appendLine("模型: ${modelType.label}  |  加速: ${if (useGpu) "GPU" else "CPU"}")
+                    appendLine("单帧 ${bitmap.width}×${bitmap.height} · ${modelType.label} · $acc")
                     appendLine("迭代 ${bench.iterations} 次（含预热 3 次）")
-                    appendLine("平均: %.1f ms (%.1f FPS)".format(bench.avgMs, bench.fps))
-                    appendLine("min: %.1f ms | p50: %.1f ms | max: %.1f ms".format(bench.minMs, bench.p50Ms, bench.maxMs))
+                    appendLine("平均 %.1f ms（%.1f FPS）".format(bench.avgMs, bench.fps))
+                    appendLine("min %.1f · p50 %.1f · max %.1f ms".format(bench.minMs, bench.p50Ms, bench.maxMs))
                 }
-                statusText.text = "完成 · SBS 已渲染，滑块可实时调视差"
+                setStatus("已生成 3D · 视差可在设置里调")
             } catch (e: Exception) {
-                statusText.text = "失败: ${e.message}"
+                setStatus("失败：${e.message}")
             }
         }
     }

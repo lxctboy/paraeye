@@ -1,127 +1,314 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    ParaEye 3D 播放器布局
+
+    分层（自下而上）：
+      1. glView      —— 3D 画面，永远铺满全屏
+      2. topScrim    —— 顶部渐变遮罩 + 标题/状态（点画面可隐藏）
+      3. statChip    —— 右上性能浮层
+      4. centerStage —— 居中大播放键 / 空态提示
+      5. bottomScrim —— 进度条 + 播放控制 + 取源按钮
+      6. settingsPanel —— 底部抽屉式设置面板（点齿轮展开）
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@color/bg_root">
 
-    <!-- 底层：SBS 画面，始终铺满全屏（全屏观看时隐藏上面那层覆盖层即可） -->
     <android.opengl.GLSurfaceView
         android:id="@+id/glView"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- 覆盖层：控制面板。半透明深色底，可边看画面边调参；全屏时整体隐藏 -->
-    <ScrollView
-        android:id="@+id/controlPanel"
+    <!-- ============ 顶部：标题 + 状态 ============ -->
+    <LinearLayout
+        android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#D6000000"
-        android:padding="12dp">
+        android:layout_gravity="top"
+        android:background="@drawable/bg_top_scrim"
+        android:orientation="vertical"
+        android:paddingStart="18dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="22dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/titleText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:letterSpacing="0.04"
+                android:text="@string/app_name"
+                android:textColor="@color/text_primary"
+                android:textSize="17sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/settingsButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_icon_button"
+                android:contentDescription="@string/action_settings"
+                android:padding="8dp"
+                android:src="@drawable/ic_settings" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:text="@string/hint_pick_source"
+            android:textColor="@color/text_secondary"
+            android:textSize="12.5sp" />
+    </LinearLayout>
+
+    <!-- ============ 性能浮层 ============ -->
+    <TextView
+        android:id="@+id/statsChip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="58dp"
+        android:layout_marginEnd="14dp"
+        android:background="@drawable/bg_stat_chip"
+        android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
+        android:paddingStart="9dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="9dp"
+        android:paddingBottom="6dp"
+        android:textColor="@color/text_primary"
+        android:textSize="10.5sp"
+        android:visibility="gone" />
+
+    <!-- ============ 居中：空态提示 / 大播放键 ============ -->
+    <LinearLayout
+        android:id="@+id/centerStage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageButton
+            android:id="@+id/bigPlayButton"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:background="@drawable/bg_center_button"
+            android:contentDescription="@string/action_play"
+            android:padding="22dp"
+            android:src="@drawable/ic_play"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/centerHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_stat_chip"
+            android:paddingStart="14dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="8dp"
+            android:text="@string/hint_pick_source"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- ============ 底部：进度条 + 控制条 ============ -->
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_bottom_scrim"
+        android:orientation="vertical"
+        android:paddingStart="12dp"
+        android:paddingTop="26dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="12dp">
+
+        <!-- 进度条 + 时间 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <SeekBar
+                android:id="@+id/positionSeek"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="1000"
+                android:progressDrawable="@drawable/seekbar_track"
+                android:thumb="@drawable/seekbar_thumb" />
+
+            <TextView
+                android:id="@+id/timeText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:fontFamily="monospace"
+                android:minWidth="96dp"
+                android:gravity="end"
+                android:text="--:-- / --:--"
+                android:textColor="@color/text_primary"
+                android:textSize="11.5sp" />
+        </LinearLayout>
+
+        <!-- 主控行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <!-- 取源：视频（主）/ 图片（次） -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/pickVideoButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:background="@drawable/bg_primary_button"
+                    android:clickable="true"
+                    android:drawableStart="@drawable/ic_video"
+                    android:drawablePadding="6dp"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="@string/source_video"
+                    android:textColor="@color/on_accent"
+                    android:textSize="13.5sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/pickButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_ghost_button"
+                    android:clickable="true"
+                    android:drawableStart="@drawable/ic_image"
+                    android:drawablePadding="6dp"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="@string/source_image"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13.5sp" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/playButton"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:background="@drawable/bg_center_button"
+                android:contentDescription="@string/action_play"
+                android:enabled="false"
+                android:padding="13dp"
+                android:src="@drawable/ic_play" />
+
+            <ImageButton
+                android:id="@+id/fullscreenButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_icon_button"
+                android:contentDescription="@string/action_fullscreen"
+                android:padding="10dp"
+                android:src="@drawable/ic_fullscreen" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ============ 设置面板（底部抽屉） ============ -->
+    <ScrollView
+        android:id="@+id/settingsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_panel"
+        android:elevation="12dp"
+        android:fillViewport="false"
+        android:paddingStart="18dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="22dp"
+        android:scrollbars="none"
+        android:visibility="gone">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/app_name"
-                android:textColor="#FFFFFF"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/pickButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="1a. 选择图片（单帧验证）" />
-
-            <Button
-                android:id="@+id/pickVideoButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="1b. 选择视频（实时流水线）" />
-
-            <Button
-                android:id="@+id/playButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:enabled="false"
-                android:text="播放 / 暂停" />
-
-            <RadioGroup
-                android:id="@+id/acceleratorGroup"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <RadioButton
-                    android:id="@+id/radioCpu"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:checked="true"
-                    android:text="CPU"
-                    android:textColor="#FFFFFF" />
-
-                <RadioButton
-                    android:id="@+id/radioGpu"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="16dp"
-                    android:text="GPU"
-                    android:textColor="#FFFFFF" />
-            </RadioGroup>
-
-            <RadioGroup
-                android:id="@+id/modelGroup"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:orientation="horizontal">
-
-                <!-- P4：只剩自导出的 280x518 INT8 模型（FP32 版会让 APK 从 28MB 涨到 128MB） -->
-                <RadioButton
-                    android:id="@+id/radioInt8"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:checked="true"
-                    android:text="INT8 280x518"
-                    android:textColor="#FFFFFF" />
-            </RadioGroup>
-
-            <Button
-                android:id="@+id/runButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="2. 生成 3D（单帧推理 + 计时）" />
+            <!-- 抽屉把手 + 标题 -->
+            <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:background="@drawable/bg_stat_chip" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="视差强度（总视差占宽度比例）"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
+                android:text="@string/settings_title"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <!-- 视差 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_parallax"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
 
             <SeekBar
                 android:id="@+id/dispSeek"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:max="30"
-                android:progress="10" />
+                android:progress="10"
+                android:progressDrawable="@drawable/slider_track"
+                android:thumb="@drawable/seekbar_thumb" />
 
             <TextView
                 android:id="@+id/dispLabel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="当前：1.0%（P0 定档，默认）"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
+                android:textColor="@color/text_secondary"
+                android:textSize="11.5sp" />
+
+            <!-- 显示内容 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_view_mode"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
 
             <RadioGroup
                 android:id="@+id/viewModeGroup"
@@ -131,125 +318,163 @@
                 android:orientation="horizontal">
 
                 <RadioButton
-                    android:id="@+id/radioModeDepth"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="深度图"
-                    android:textColor="#FFFFFF" />
+                    android:id="@+id/radioModeSbs"
+                    style="@style/ParaEye.Chip"
+                    android:checked="true"
+                    android:text="@string/mode_sbs" />
 
                 <RadioButton
-                    android:id="@+id/radioModeSbs"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="16dp"
-                    android:checked="true"
-                    android:text="SBS 3D"
-                    android:textColor="#FFFFFF" />
+                    android:id="@+id/radioModeDepth"
+                    style="@style/ParaEye.Chip"
+                    android:text="@string/mode_depth" />
             </RadioGroup>
 
-            <CheckBox
-                android:id="@+id/swapCheck"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="左右交换（交叉眼观看时用）"
-                android:textColor="#FFFFFF" />
-
-            <CheckBox
-                android:id="@+id/fp16Check"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="GPU FP16（更快，精度略降；仅 GPU 有效）"
-                android:textColor="#FFFFFF" />
-
-            <CheckBox
-                android:id="@+id/flipCheck"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="视频上下翻转（画面倒置时勾选）"
-                android:textColor="#FFFFFF" />
-
-            <!-- 发热控制：推理占空比 = 深度FPS × 单帧耗时。165.8ms/帧下
-                 5.5FPS≈90% 占空比（发热主因），3FPS≈50%，2FPS≈33% -->
+            <!-- 观看方式 -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="深度帧率上限（控发热：越低越凉，EMA 会插值兜底）"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
+                android:layout_marginTop="14dp"
+                android:text="@string/label_watch"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <CheckBox
+                    android:id="@+id/swapCheck"
+                    style="@style/ParaEye.Chip"
+                    android:text="@string/opt_swap_lr" />
+
+                <CheckBox
+                    android:id="@+id/flipCheck"
+                    style="@style/ParaEye.Chip"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/opt_flip" />
+            </LinearLayout>
+
+            <!-- 深度帧率上限 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_depth_cap"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
 
             <RadioGroup
                 android:id="@+id/depthCapGroup"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
+                android:layout_marginTop="6dp"
                 android:orientation="horizontal">
 
                 <RadioButton
                     android:id="@+id/radioCapUnlimited"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    style="@style/ParaEye.Chip"
                     android:checked="true"
-                    android:text="不限"
-                    android:textColor="#FFFFFF" />
+                    android:text="@string/cap_unlimited" />
 
                 <RadioButton
                     android:id="@+id/radioCap5"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:text="5"
-                    android:textColor="#FFFFFF" />
+                    style="@style/ParaEye.Chip"
+                    android:text="5" />
 
                 <RadioButton
                     android:id="@+id/radioCap4"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:text="4"
-                    android:textColor="#FFFFFF" />
+                    style="@style/ParaEye.Chip"
+                    android:text="4" />
 
                 <RadioButton
                     android:id="@+id/radioCap3"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:text="3"
-                    android:textColor="#FFFFFF" />
+                    style="@style/ParaEye.Chip"
+                    android:text="3" />
 
                 <RadioButton
                     android:id="@+id/radioCap2"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:text="2"
-                    android:textColor="#FFFFFF" />
+                    style="@style/ParaEye.Chip"
+                    android:text="2" />
             </RadioGroup>
 
-            <Button
-                android:id="@+id/fullscreenButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="3. 全屏观看（双击画面退出）" />
-
+            <!-- 推理后端 -->
             <TextView
-                android:id="@+id/statusText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:textColor="#FFFFFF"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_backend"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <RadioGroup
+                    android:id="@+id/acceleratorGroup"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <RadioButton
+                        android:id="@+id/radioCpu"
+                        style="@style/ParaEye.Chip"
+                        android:checked="true"
+                        android:text="@string/backend_cpu" />
+
+                    <RadioButton
+                        android:id="@+id/radioGpu"
+                        style="@style/ParaEye.Chip"
+                        android:text="@string/backend_gpu" />
+                </RadioGroup>
+
+                <CheckBox
+                    android:id="@+id/fp16Check"
+                    style="@style/ParaEye.Chip"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/opt_fp16" />
+            </LinearLayout>
+
+            <!-- 单帧模式：生成 3D -->
+            <TextView
+                android:id="@+id/runButton"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/bg_ghost_button"
+                android:clickable="true"
+                android:drawableStart="@drawable/ic_wand"
+                android:drawablePadding="8dp"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/action_make3d"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp" />
 
             <TextView
                 android:id="@+id/statsText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_stat_chip"
                 android:fontFamily="monospace"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
+                android:lineSpacingExtra="3dp"
+                android:padding="10dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="10.5sp" />
 
+            <TextView
+                android:id="@+id/modelText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="10.5sp" />
         </LinearLayout>
     </ScrollView>
 </FrameLayout>

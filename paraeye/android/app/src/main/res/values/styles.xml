@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        胶囊 chip 样式：去掉 RadioButton/CheckBox 自带圆点与最小宽度，
+        用 shape 做背景，选中态由 :checked 驱动（bg_chip.xml）。
+    -->
+    <style name="ParaEye.Chip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">34dp</item>
+        <item name="android:layout_marginEnd">8dp</item>
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:button">@null</item>
+        <item name="android:gravity">center</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:textColor">@drawable/color_chip_text</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+</resources>

@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ParaEye" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+        暗色播放器主题：画面全屏铺满，系统 UI 一律深色，
+        控件默认色去掉（自绘 shape/vector），避免浅色主题的高光。
+    -->
+    <style name="Theme.ParaEye" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_root</item>
+        <item name="android:colorBackground">@color/bg_root</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>
