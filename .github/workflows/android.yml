@@ -32,7 +32,7 @@ jobs:
         continue-on-error: true
 
       - name: Build summary (debug)
-        if: ${{ steps.debugBuild.outcome == 'failure' }}
+        if: ${{ failure() && steps.debugBuild.outcome != 'skipped' }}
         run: |
           {
             echo "### assembleDebug 失败摘要"
@@ -64,18 +64,31 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 上面两步用 continue-on-error 让摘要步骤能执行；这里按outcome 做最终判定，避免假绿
-      # （不用 always()：成功路径下这两步 outcome 本就是 success，无需强制执行）
+      # 最终判定：读 gradle-build-action 写在GITHUB_OUTPUT 里的 build-scan/退出码不可靠，
+# 直接查build.log 里的结果标记，最稳妥
       - name: Verify build and tests succeeded
-        if: ${{ steps.debugBuild.outcome != 'success' || steps.unitTests.outcome != 'success' }}
         run: |
-          {
-            echo "### ❌ 构建或单测未通过"
-            echo "- debugBuild: ${{ steps.debugBuild.outcome }}"
-            echo "- unitTests: ${{ steps.unitTests.outcome }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::构建或单测未通过（debugBuild=${{ steps.debugBuild.outcome }}, unitTests=${{ steps.unitTests.outcome }}），详见上方摘要"
-          exit 1
+          set -uo pipefail
+          log=paraeye/android/build.log
+          if [ ! -f "$log" ]; then
+            echo "::error::未生成 $log，构建异常终止"
+            exit 1
+          fi
+          # assembleDebug 与 testDebugUnitTest 各自追加日志，判断最后一次结果
+          if grep -q "BUILD FAILED" "$log"; then
+            echo "### ❌ 构建失败"
+            echo '```'
+            grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|tests? completed .*failed" "$log" | head -30
+            echo '```'
+            echo "::error::Gradle 构建失败，详见上方摘要"
+            exit 1
+          fi
+          if ! grep -q "BUILD SUCCESSFUL" "$log"; then
+            echo "::error::$log 中未找到 BUILD SUCCESSFUL"
+            tail -20 "$log"
+            exit 1
+          fi
+          echo "✅ Gradle 构建与单测通过（$(grep -c 'BUILD SUCCESSFUL' "$log") 次成功标记）"
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
       - name: Decode release keystore
