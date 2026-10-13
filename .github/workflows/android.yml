@@ -28,20 +28,19 @@ jobs:
           gradle-version: '8.11.1'
           cache-disabled: true
 
-      # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper。
-      # 自己 tee 日志落盘：Verify 步骤读它判成败，action 内建输出取不到。
-      # 失败时把编译/单测错误摘要写进 job summary（否则只能翻全量日志定位）。
+      # 非 tag 推送（main / dispatch）才做 debug 构建与单测；tag 推送直接走发布路径，
+      # 避免 debug 构建的偶发抖动（如模型下载）挡住签名 Release 的产出。
+      # 不用 continue-on-error：构建/单测失败就让它自然失败，结论才可靠。
       - name: Build debug APK
-        id: debugBuild
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -uo pipefail
           cd paraeye/android
           gradle assembleDebug --console=plain 2>&1 | tee build.log
           exit "${PIPESTATUS[0]}"
-        continue-on-error: true
 
       - name: Build summary (debug)
-        if: ${{ failure() && steps.debugBuild.outcome != 'skipped' }}
+        if: ${{ failure() && !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           {
             echo "### assembleDebug 失败摘要"
@@ -52,16 +51,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run unit tests
-        id: unitTests
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -uo pipefail
           cd paraeye/android
           gradle testDebugUnitTest --console=plain 2>&1 | tee test.log
           exit "${PIPESTATUS[0]}"
-        continue-on-error: true
 
       - name: Test summary
-        if: ${{ failure() && steps.unitTests.outcome != 'skipped' }}
+        if: ${{ failure() && !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           {
             echo "### testDebugUnitTest 失败摘要"
@@ -73,43 +71,16 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 最终判定：读我们 tee 落盘的日志标记，不依赖 action outcome 语义。
-      # 诊断信息全部 echo 到本步骤 stdout（build.log 不作为 artifact 上传，本步骤
-      #输出是公有仓库无需认证就能看到的最短路径）。
-      - name: Verify build and tests succeeded
-        run: |
-          set -uo pipefail
-          bad=0
-          for pair in "build.log:assembleDebug" "test.log:testDebugUnitTest"; do
-            log="paraeye/android/${pair%%:*}"
-            task="${pair##*:}"
-            echo "--- $task ($log) ---"
-            if [ ! -f "$log" ]; then
-              echo "DIAG:missing $log"
-              bad=1
-              continue
-            fi
-            echo "DIAG: bytes=$(stat -c %s "$log") lines=$(wc -l < "$log")"
-            echo "DIAG: BUILD_FAILED_hits=$(grep -c 'BUILD FAILED' "$log" || true)"
-            echo "DIAG: BUILD_SUCCESSFUL_hits=$(grep -c 'BUILD SUCCESSFUL' "$log" || true)"
-            echo "DIAG: tail:"
-            tail -5 "$log" | sed 's/^/TAIL| /'
-            if grep -q "BUILD FAILED" "$log"; then
-              echo "DIAG: verdict=$task FAILED"
-              bad=1
-            elif ! grep -q "BUILD SUCCESSFUL" "$log"; then
-              echo "DIAG: verdict=$task NO_MARKER"
-              bad=1
-            else
-              echo "DIAG: verdict=$task OK"
-            fi
-          done
-          if [ "$bad" -eq 0 ]; then
-            echo "✅ assembleDebug 与 testDebugUnitTest 均通过"
-          else
-            echo "::error::存在未通过的步骤，诊断信息见上"
-          fi
-          exit "$bad"
+      # 日志落盘为 artifact（无需 admin 即可下载），远端排障最短路径。
+      - name: Upload CI logs
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            paraeye/android/build.log
+            paraeye/android/test.log
+          if-no-files-found: warn
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
       - name: Decode release keystore
@@ -157,12 +128,14 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: paraeye-release-apk
           path: paraeye/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         with:
           name: paraeye-debug-apk
           path: paraeye/android/app/build/outputs/apk/debug/*.apk
