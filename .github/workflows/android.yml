@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # tag 构建要把签名 APK 挂到 GitHub Release，默认只读 GITHUB_TOKEN 会 403
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
