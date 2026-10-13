@@ -354,6 +354,12 @@
                     style="@style/ParaEye.Chip"
                     android:layout_marginStart="8dp"
                     android:text="@string/opt_flip" />
+
+                <CheckBox
+                    android:id="@+id/muteCheck"
+                    style="@style/ParaEye.Chip"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/opt_mute" />
             </LinearLayout>
 
             <!-- 深度帧率上限 -->

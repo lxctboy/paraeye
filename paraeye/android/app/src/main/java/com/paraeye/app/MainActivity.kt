@@ -150,6 +150,14 @@ class MainActivity : ComponentActivity() {
         renderer.onVideoStarted = { w, h, dur ->
             setStatus("已加载 ${w}×${h} · %.1f 秒 · 实时 3D 中".format(dur / 1_000_000f))
         }
+        // 音频焦点被抢占：音频侧已自行暂停，这里把 UI 也切回暂停态，避免按钮显示"正在播放"
+        renderer.onAudioFocusLost = {
+            if (!playing) return@onAudioFocusLost
+            playing = false
+            syncPlayIcons()
+            refreshIdleHints()
+            showChrome(autoHide = false)
+        }
 
         wirePlayerControls()
         wireSettings()
@@ -372,6 +380,10 @@ class MainActivity : ComponentActivity() {
             renderer.videoFlipY = checked
         }
 
+        findViewById<CheckBox>(R.id.muteCheck).setOnCheckedChangeListener { _, checked ->
+            renderer.setMuted(checked)
+        }
+
         findViewById<CheckBox>(R.id.fp16Check).setOnCheckedChangeListener { _, checked ->
             useFp16 = checked
             onConfigChanged()
@@ -538,8 +550,8 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- 视频路径 ----------------
 
-    private fun startVideo(uri: Uri) {
-        currentBitmap = null
+private fun startVideo(uri: Uri) {
+    currentBitmap = null
         lastBench = null
         videoMode = true
         playing = true

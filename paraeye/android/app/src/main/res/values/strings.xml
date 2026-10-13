@@ -24,6 +24,7 @@
     <string name="label_watch">观看方式</string>
     <string name="opt_swap_lr">交换左右眼</string>
     <string name="opt_flip">上下翻转</string>
+    <string name="opt_mute">静音</string>
     <string name="label_depth_cap">深度帧率上限（越低越凉）</string>
     <string name="cap_unlimited">不限</string>
     <string name="label_backend">推理后端</string>

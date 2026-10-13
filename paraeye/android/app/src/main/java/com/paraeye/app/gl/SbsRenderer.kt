@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import com.paraeye.app.depth.ImagePreprocessor
 import com.paraeye.app.depth.TemporalSmoother
+import com.paraeye.app.video.AudioPlayer
 import com.paraeye.app.video.VideoDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -191,6 +192,9 @@ void main() {
     var onVideoError: ((String) -> Unit)? = null
     var onVideoStarted: ((Int, Int, Long) -> Unit)? = null
 
+    /** 音频焦点被抢占（如来电/其他应用播放）：UI 应把播放按钮切回暂停态 */
+    var onAudioFocusLost: (() -> Unit)? = null
+
     // ---- 统计（UI 线程轮询）----
     @Volatile var videoFps = 0f
     @Volatile var depthFps = 0f
@@ -219,6 +223,12 @@ void main() {
     private var videoTex = 0
     private var videoST: SurfaceTexture? = null
     @Volatile private var videoDecoder: VideoDecoder? = null
+
+    /** 伴音轨播放器：与视频共享 Uri，各自抽轨独立解码（见 AudioPlayer 类注释） */
+    @Volatile private var audioPlayer: AudioPlayer? = null
+
+    /** 静音状态需跨 AudioPlayer 实例保留（换视频会重建播放器） */
+    @Volatile private var audioMuted = false
     private val texMtx = FloatArray(16)
     private val frameAvailable = AtomicBoolean(false)
 
@@ -309,7 +319,22 @@ void main() {
 
     fun setPaused(paused: Boolean) {
         videoDecoder?.paused = paused
+        audioPlayer?.paused = paused
     }
+
+    /** 静音开关（不影响视频）；AudioPlayer 随视频新建，故此处持久化后在新实例上套用 */
+    fun setMuted(muted: Boolean) {
+        audioMuted = muted
+        audioPlayer?.setMuted(muted)
+    }
+
+    /** 音量 0~1 */
+    fun setVolume(volume: Float) {
+        audioPlayer?.setVolume(volume)
+    }
+
+    /** 当前视频是否含音轨（供状态栏提示；无音轨时静默播放） */
+    val hasAudioTrack: Boolean get() = audioPlayer?.hasAudio == true
 
     /** 切换视频 / 换模型时重置过渡状态，避免把上一个场景的深度混进来 */
     fun resetDepthSmoother() {
@@ -324,9 +349,10 @@ void main() {
     /** 视频总时长（微秒）；非视频态返回 0 */
     val videoDurationUs: Long get() = videoDecoder?.durationUs ?: 0L
 
-    /** 跳转（毫秒，GOP 内对齐）；非视频态为空操作 */
+    /** 跳转（毫秒，GOP 内对齐）；视频与音频同步跳转 */
     fun seekToMs(ms: Long) {
         videoDecoder?.seekToMs(ms)
+        audioPlayer?.seekToMs(ms)
     }
 
     /** GL 线程：上传 UI 线程提交的数据 */
@@ -504,6 +530,8 @@ void main() {
     private fun handleVideoCommands() {
         if (pendingStop) {
             pendingStop = false
+            audioPlayer?.release()
+            audioPlayer = null
             videoDecoder?.release()
             videoDecoder = null
             videoInfoSent = false
@@ -515,15 +543,29 @@ void main() {
         pendingStart?.let { (ctx, uri) ->
             pendingStart = null
             videoDecoder?.release()
+            videoDecoder = null
+            audioPlayer?.release()
             val st = videoST ?: return
             videoInfoSent = false
-            videoDecoder = VideoDecoder(
+            val decoder = VideoDecoder(
                 context = ctx,
                 uri = uri,
                 surfaceTexture = st,
                 onFrame = { frameAvailable.set(true) },
                 onError = { msg -> mainPost { onVideoError?.invoke(msg) } },
-            ).also { it.start() }
+            )
+            videoDecoder = decoder
+            // 音轨独立解码：位置参考指向视频解码器，供 A/V 漂移检测对齐
+            val player = AudioPlayer(
+                context = ctx,
+                uri = uri,
+                referencePositionUs = { decoder.positionUs },
+                onFocusPause = { mainPost { onAudioFocusLost?.invoke() } },
+            )
+            audioPlayer = player
+            player.setMuted(audioMuted)
+            player.start()
+            decoder.start()
         }
     }
 
