@@ -1,7 +1,7 @@
 # ParaEye 3D（Android）
 
-把本地视频/图片实时转成裸眼平行眼 Full-SBS 3D。当前版本 **v1.1.0（播放器版）**：
-https://github.com/lxctboy/paraeye/releases/tag/v1.1.0
+把本地视频/图片实时转成裸眼平行眼 Full-SBS 3D。当前版本 **v1.2.0（有声版）**：
+https://github.com/lxctboy/paraeye/releases/tag/v1.2.0
 
 阶段目标：
 
@@ -12,6 +12,7 @@ https://github.com/lxctboy/paraeye/releases/tag/v1.1.0
 - **P3.6**：全屏观看（沉浸式 + 双眼紧邻渲染）、深度帧率上限控发热 ✅
 - **P4**：输入降分辨率 280×518（真机 165.8ms / 深度 5.5FPS / 视频 60FPS）；摄像头流按用户决定跳过 ✅
 - **v1.1.0**：界面播放器化（进度条 + seek、大播放键、chrome 自动隐藏、底部抽屉设置）+ 自适应图标 + 正式签名发布 ✅
+- **v1.2.0**：补齐伴音轨（独立 AudioPlayer + A/V 漂移硬同步 + 音频焦点抢占自动暂停）+ 静音开关 ✅
 
 ## 界面（v1.1.0 播放器）
 
@@ -66,7 +67,21 @@ gradle assembleDebug          # 输出 app/build/outputs/apk/debug/app-debug.apk
 gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一化 + NCHW 布局 + EMA）
 ```
 
-**CI**：push 到 `main` 时构建 debug APK + 跑单测，artifact 名 `paraeye-debug-apk`（无需本地 JDK/SDK）。打 `v*` tag 时额外解出签名 keystore、出**正式签名** release APK，并自动挂到该 tag 的 GitHub Release（artifact 名 `paraeye-release-apk`）。
+**CI**：push 到 `main` 时构建 debug APK + 跑单测，artifact 名 `paraeye-debug-apk`（无需本地 JDK/SDK）。打 `v*` tag 时**跳过 debug/单测**，直接解出签名 keystore、出**正式签名** release APK 并挂到该 tag 的 GitHub Release（artifact 名 `paraeye-release-apk`）——这样 debug 构建的偶发抖动不会挡住已验证代码的发布。
+
+### 排障：CI 红了怎么看错误
+
+本仓库有两条容易踩的坑，远程排障前先记住：
+
+1. **不要给构建步骤加 `continue-on-error: true`**。它的 `conclusion` 恒为 `success`，失败会被伪装成绿色，导致「步骤全绿但 job 失败」这种自相矛盾的现象。构建/单测应当自然失败。
+2. **无 admin 权限时拿不到日志**。`/actions/jobs/{id}/logs` 与 artifact 下载接口都返回 401/403（公开仓库也不例外）。唯一免鉴权可读的通道是 **check-run annotations**。因此工作流里构建失败时会把 `build.log` 里的错误行用 `::error::` 转成 annotation：
+
+```bash
+curl -s -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/lxctboy/paraeye/check-runs/<check_run_id>/annotations?per_page=100"
+```
+
+注意 **Gradle 的真实错误在日志末尾**（开头只有 `Welcome to Gradle!` banner），所以要 `tail` 并用 grep 过滤 `^e: |What went wrong|Execution failed for task`。
 
 **发布签名**：keystore 由 `paraeye/p4/setup_release_signing.py` 一次性生成（PKCS12 / RSA 2048 / alias `paraeye` / 25 年），本地文件在 `paraeye/release/`（已 gitignore，**务必自行备份，丢失后无法给已安装应用发更新**）。脚本同时把三条写入 GitHub Actions Secrets：`PARAKEYSTORE_B64`、`PARAKEYSTORE_PASSWORD`、`PARAKEY_ALIAS`；PKCS12 只有一档口令（storePassword 与 keyPassword 相同），`build.gradle.kts` 只在拿到 `PARAKEYSTORE_PATH` 时启用签名，缺失则退回未签名构建，不会卡 CI。
 
@@ -188,4 +203,7 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 - 全屏观看：点画面或双击进入，沉浸式系统栏 + chrome 收起；**不强制横屏**（竖屏片源裸眼观看本就是竖屏布局，强制横屏会把两眼撑出中间黑带导致无法融合）；`configChanges` 保证旋转不中断播放
 - **seek 精度**：`SEEK_TO_PREVIOUS_SYNC` 对齐到目标之前最近关键帧，误差一个 GOP；进度条拖到任意位置都能播，只是落点可能略早于拖动目标
 - 进度条在图片模式下禁用（显示「图片 · 单帧」）；暂停时位置不再前进，属预期
+- **伴音轨（v1.2.0）**：音视频各用一路 MediaExtractor/MediaCodec（同一 extractor 抽两轨会交错，无法稳定喂视频）；节奏由 AudioTrack 硬件时钟决定，仅当 A/V 位置差 >400ms 才硬同步（flush + seek 到最近同步点 + 重置播放头），两次硬同步间隔 ≥8s 避免咔哒声。无音轨或解码失败静默降级为无声，不影响看 3D
+- **A/V 硬同步是「跳一下」而非「连续拉伸」**：超出阈值时画面与声音会同时跳到目标位置附近，属于有意取舍（听感上比持续漂移可接受）
+- 音频焦点被其他应用抢占（如来电、导航）会自动暂停并把 UI 播放键置为暂停态
 - 摄像头实时流：**已跳过（2026-10-13 用户决定）**，不再做；视频保存（≤1920×1080 + 3D 元数据）在 P5
