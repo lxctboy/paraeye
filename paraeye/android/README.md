@@ -35,6 +35,7 @@ https://github.com/lxctboy/paraeye/releases/tag/v1.1.0
 - 推理：**LiteRT 2.3.0 V2 CompiledModel API**（`com.google.ai.edge.litert:litert` + `litert-gpu`）
 - 渲染：**OpenGL ES 2.0**（兼容性优先，未用 GLES3 浮点纹理）
 - 解码：**MediaExtractor + MediaCodec**（输出 Surface → SurfaceTexture，全程无 CPU 拷贝）
+- 音频：**第二个 MediaExtractor 抽 audio 轨 → MediaCodec → AudioTrack**（`MODE_STREAM` + 阻塞写）
 - 模型：**P4 起改用自导出的 280×518 INT8**（社区原版只有 686×518，会把竖屏视频竖挤 2.35 倍）
   - 由 `.github/workflows/export-tflite.yml` 重导出，发布到滚动 release「models」，构建时下载
   - 量化与社区原版同款：AI Edge Quantizer `dynamic_wi8_afp32`（int8 权重 + fp32 接口，27.6MB）
@@ -81,9 +82,11 @@ gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一�
 2. 底部控制条：拖动进度条跳转、点播放键暂停/继续（暂停时画面停在当前帧，适合细看立体感）
 3. 点画面显隐控制条（播放中 3.5s 自动隐藏），双击切全屏
 4. 右上齿轮打开设置抽屉：视差强度、显示内容（SBS 3D / 深度图）、交换左右眼（交叉眼观看）、
-   深度帧率上限（控发热）、推理后端 CPU/GPU（+FP16）
+   静音、深度帧率上限（控发热）、推理后端 CPU/GPU（+FP16）
 5. 右上浮层实时显示视频 FPS / 深度更新 FPS / 单帧推理耗时
 6. 画面上下颠倒时在抽屉里勾「上下翻转」（部分机型 OES 变换矩阵方向相反，见下方已知边界）
+
+> **声音**：视频自带音轨时会正常播放。需要静音（如外放扰民）就在抽屉里勾「静音」，切换视频后设置会保留。
 
 ### 图片（单帧 3D）
 
@@ -118,6 +121,11 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 
 关键设计：
 
+- **音视频各自抽轨**：`MediaExtractor` 同时 `selectTrack` 两条轨后，`readSampleData` 会在已选轨之间交错返回，无法把视频样本稳定喂给视频解码器。所以音轨用**第二个 extractor** 独立抽取，两路各自解码、共享同一个 Uri
+- **音频节奏由硬件时钟决定**：`AudioTrack` 用 `MODE_STREAM` + `WRITE_BLOCKING`，缓冲满时写线程自然阻塞，播放节奏就是声卡时钟，不需要像视频那样 sleep 对齐墙钟
+- **A/V 同步**：只在两者播放位置差超过 400ms 时做一次硬同步（flush + 跳到最近同步点 + 重置播放头 + 丢弃 30ms 容差内的旧样本），两次硬同步之间有 8秒冷却，避免反复重锚出现咔哒声。判据在 `AvSync` 里，配有单测
+- **音频焦点**：申请 `AUDIOFOCUS_GAIN`；被其他应用抢占（来电、别的播放器）时自动暂停并回调 UI，把播放按钮同步切回暂停态
+- **静默降级**：视频没有音轨、音频解码器创建失败、`AudioTrack` 构建失败——都只打一条 Log，3D 画面照常播放
 - **推理与渲染解耦**：推理跑在单线程 executor 上，`busy` 时直接丢帧，显示帧率不受推理耗时拖累（代价是深度更新率低于视频帧率）
 - **P3.5 逐帧深度过渡（治卡核心）**：推理只有 ~6FPS 时，离散 EMA 也只在深度到来时生效，中间渲染帧深度不变，看起来一跳一跳。`TemporalSmoother.advance()` 把同一个时间常数 τ≈138ms（与 P0 定档 α=0.7@6FPS **数学等效**，有单测）展开到每个渲染帧，视觉上把 6FPS 深度插值成渲染帧率
 - **零分配热路径**：NCHW 输入、rgba 双缓冲池、深度上传 buffer、R8 输出全部预分配复用；归一化走 256×3 LUT（省 106 万次除法/帧）
