@@ -231,7 +231,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="3. 全屏观看（自动横屏 · 双击画面退出）" />
+                android:text="3. 全屏观看（双击画面退出）" />
 
             <TextView
                 android:id="@+id/statusText"

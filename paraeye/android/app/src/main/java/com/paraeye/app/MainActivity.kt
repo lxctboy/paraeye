@@ -1,6 +1,5 @@
 package com.paraeye.app
 
-import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -68,7 +67,7 @@ class MainActivity : ComponentActivity() {
     @Volatile private var videoMode = false
     @Volatile private var playing = false
 
-    /** 全屏观看（隐藏控制面板 + 沉浸式系统栏 + 自动横屏） */
+    /** 全屏观看（隐藏控制面板 + 沉浸式系统栏；方向跟随传感器） */
     private var fullscreen = false
 
     /**
@@ -273,18 +272,17 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- 全屏观看 ----------------
 
-    /** 切换全屏：隐藏控制面板 + 沉浸式系统栏 + 自动横屏（SBS 是横宽高比 1440x1280） */
+    /**
+     * 切换全屏：隐藏控制面板 + 沉浸式系统栏。
+     * 不强制 orientation：SBS 片源以竖屏为主，平行眼裸眼观看就是竖屏布局；
+     * P3.6 真机反馈——强制横屏后两眼之间被撑出黑带、无法融合出 3D。
+     * 方向跟随传感器，横竖屏下渲染器都会把左右眼贴成紧邻的一对。
+     */
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
         controlPanel.visibility = if (on) View.GONE else View.VISIBLE
-        fullscreenButton.text = if (on) "退出全屏" else "3. 全屏观看（自动横屏 · 双击画面退出）"
+        fullscreenButton.text = if (on) "退出全屏" else "3. 全屏观看（双击画面退出）"
         applyImmersive(on)
-        // 进全屏优先横屏（letterbox 后 SBS 才能铺满）；退出后交还传感器决定
-        requestedOrientation = if (on) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
     }
 
     @Suppress("DEPRECATION")

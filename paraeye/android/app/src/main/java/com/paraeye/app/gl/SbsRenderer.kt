@@ -454,12 +454,32 @@ void main() {
         GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, GlUtil.QUAD)
 
         if (mode == MODE_SBS) {
-            val half = surfaceW / 2
+            // SBS 双眼必须紧邻成「一对」：把 (2×srcW × srcH) 的整对做 contain 适配并居中，
+            // 左半给左眼、右半给右眼。绝不能把每只眼各自贴进屏幕半区——
+            // 横屏时半区宽高比(~1.1)远大于视频(0.5625)，两眼各自水平居中，
+            // 中间会被撑出约 600px 黑带，平行眼融合直接失效
+            // （P3.6 真机反馈：全屏中间黑边、看不到 3D 效果）。
+            val pairAspect = 2f * srcW / srcH
+            val surfAspect = surfaceW.toFloat() / surfaceH.toFloat()
+            val pairW: Int
+            val pairH: Int
+            if (surfAspect > pairAspect) {
+                // 屏幕更宽（如横屏看竖屏视频）→ 高度撑满，宽度居中
+                pairH = surfaceH
+                pairW = (surfaceH * pairAspect).toInt().coerceAtMost(surfaceW)
+            } else {
+                // 屏幕更高（如竖屏）→ 宽度撑满，高度居中
+                pairW = surfaceW
+                pairH = (surfaceW / pairAspect).toInt().coerceAtMost(surfaceH)
+            }
+            val x0 = (surfaceW - pairW) / 2
+            val y0 = (surfaceH - pairH) / 2
+            val viewW = maxOf(1, pairW / 2)
             // swapLr：交叉眼观看时交换左右顺序
-            val leftX = if (swapLr) half else 0
-            val rightX = if (swapLr) 0 else half
-            drawView(leftX, 0, half, surfaceH, -1f, MODE_SBS)
-            drawView(rightX, 0, half, surfaceH, 1f, MODE_SBS)
+            val leftX = if (swapLr) x0 + viewW else x0
+            val rightX = if (swapLr) x0 else x0 + viewW
+            drawView(leftX, y0, viewW, pairH, -1f, MODE_SBS)
+            drawView(rightX, y0, viewW, pairH, 1f, MODE_SBS)
         } else {
             drawView(0, 0, surfaceW, surfaceH, -1f, MODE_DEPTH)
         }
