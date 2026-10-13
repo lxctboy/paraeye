@@ -1,169 +1,255 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="12dp">
+    android:layout_height="match_parent">
 
-    <LinearLayout
+    <!-- 底层：SBS 画面，始终铺满全屏（全屏观看时隐藏上面那层覆盖层即可） -->
+    <android.opengl.GLSurfaceView
+        android:id="@+id/glView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 覆盖层：控制面板。半透明深色底，可边看画面边调参；全屏时整体隐藏 -->
+    <ScrollView
+        android:id="@+id/controlPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:background="#D6000000"
+        android:padding="12dp">
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <Button
-            android:id="@+id/pickButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="1a. 选择图片（单帧验证）" />
-
-        <Button
-            android:id="@+id/pickVideoButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="1b. 选择视频（实时流水线）" />
-
-        <Button
-            android:id="@+id/playButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:enabled="false"
-            android:text="播放 / 暂停" />
-
-        <RadioGroup
-            android:id="@+id/acceleratorGroup"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <RadioButton
-                android:id="@+id/radioCpu"
-                android:layout_width="wrap_content"
+            <TextView
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="CPU" />
+                android:text="@string/app_name"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp"
+                android:textStyle="bold" />
 
-            <RadioButton
-                android:id="@+id/radioGpu"
-                android:layout_width="wrap_content"
+            <Button
+                android:id="@+id/pickButton"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="16dp"
-                android:text="GPU" />
-        </RadioGroup>
+                android:layout_marginTop="8dp"
+                android:text="1a. 选择图片（单帧验证）" />
 
-        <RadioGroup
-            android:id="@+id/modelGroup"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:orientation="horizontal">
-
-            <!-- P4：只剩自导出的 280x518 INT8 模型（FP32 版会让 APK 从 28MB 涨到 128MB） -->
-            <RadioButton
-                android:id="@+id/radioInt8"
-                android:layout_width="wrap_content"
+            <Button
+                android:id="@+id/pickVideoButton"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="INT8 280x518" />
-        </RadioGroup>
+                android:layout_marginTop="4dp"
+                android:text="1b. 选择视频（实时流水线）" />
 
-        <Button
-            android:id="@+id/runButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="2. 生成 3D（单帧推理 + 计时）" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="视差强度（总视差占宽度比例）"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/dispSeek"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="30"
-            android:progress="10" />
-
-        <TextView
-            android:id="@+id/dispLabel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="当前：1.0%（P0 定档，默认）"
-            android:textSize="13sp" />
-
-        <RadioGroup
-            android:id="@+id/viewModeGroup"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <RadioButton
-                android:id="@+id/radioModeDepth"
-                android:layout_width="wrap_content"
+            <Button
+                android:id="@+id/playButton"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="深度图" />
+                android:layout_marginTop="4dp"
+                android:enabled="false"
+                android:text="播放 / 暂停" />
 
-            <RadioButton
-                android:id="@+id/radioModeSbs"
-                android:layout_width="wrap_content"
+            <RadioGroup
+                android:id="@+id/acceleratorGroup"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="16dp"
-                android:checked="true"
-                android:text="SBS 3D" />
-        </RadioGroup>
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
 
-        <CheckBox
-            android:id="@+id/swapCheck"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="左右交换（交叉眼观看时用）" />
+                <RadioButton
+                    android:id="@+id/radioCpu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="CPU"
+                    android:textColor="#FFFFFF" />
 
-        <CheckBox
-            android:id="@+id/fp16Check"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="GPU FP16（更快，精度略降；仅 GPU 有效）" />
+                <RadioButton
+                    android:id="@+id/radioGpu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:text="GPU"
+                    android:textColor="#FFFFFF" />
+            </RadioGroup>
 
-        <CheckBox
-            android:id="@+id/flipCheck"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="视频上下翻转（画面倒置时勾选）" />
+            <RadioGroup
+                android:id="@+id/modelGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
 
-        <android.opengl.GLSurfaceView
-            android:id="@+id/glView"
-            android:layout_width="match_parent"
-            android:layout_height="340dp"
-            android:layout_marginTop="8dp" />
+                <!-- P4：只剩自导出的 280x518 INT8 模型（FP32 版会让 APK 从 28MB 涨到 128MB） -->
+                <RadioButton
+                    android:id="@+id/radioInt8"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="INT8 280x518"
+                    android:textColor="#FFFFFF" />
+            </RadioGroup>
 
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textSize="14sp" />
+            <Button
+                android:id="@+id/runButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="2. 生成 3D（单帧推理 + 计时）" />
 
-        <TextView
-            android:id="@+id/statsText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:fontFamily="monospace"
-            android:textSize="13sp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="视差强度（总视差占宽度比例）"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
 
-    </LinearLayout>
-</ScrollView>
+            <SeekBar
+                android:id="@+id/dispSeek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="30"
+                android:progress="10" />
+
+            <TextView
+                android:id="@+id/dispLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="当前：1.0%（P0 定档，默认）"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <RadioGroup
+                android:id="@+id/viewModeGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/radioModeDepth"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="深度图"
+                    android:textColor="#FFFFFF" />
+
+                <RadioButton
+                    android:id="@+id/radioModeSbs"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:checked="true"
+                    android:text="SBS 3D"
+                    android:textColor="#FFFFFF" />
+            </RadioGroup>
+
+            <CheckBox
+                android:id="@+id/swapCheck"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="左右交换（交叉眼观看时用）"
+                android:textColor="#FFFFFF" />
+
+            <CheckBox
+                android:id="@+id/fp16Check"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="GPU FP16（更快，精度略降；仅 GPU 有效）"
+                android:textColor="#FFFFFF" />
+
+            <CheckBox
+                android:id="@+id/flipCheck"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="视频上下翻转（画面倒置时勾选）"
+                android:textColor="#FFFFFF" />
+
+            <!-- 发热控制：推理占空比 = 深度FPS × 单帧耗时。165.8ms/帧下
+                 5.5FPS≈90% 占空比（发热主因），3FPS≈50%，2FPS≈33% -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="深度帧率上限（控发热：越低越凉，EMA 会插值兜底）"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <RadioGroup
+                android:id="@+id/depthCapGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/radioCapUnlimited"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="不限"
+                    android:textColor="#FFFFFF" />
+
+                <RadioButton
+                    android:id="@+id/radioCap5"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="5"
+                    android:textColor="#FFFFFF" />
+
+                <RadioButton
+                    android:id="@+id/radioCap4"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="4"
+                    android:textColor="#FFFFFF" />
+
+                <RadioButton
+                    android:id="@+id/radioCap3"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="3"
+                    android:textColor="#FFFFFF" />
+
+                <RadioButton
+                    android:id="@+id/radioCap2"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="2"
+                    android:textColor="#FFFFFF" />
+            </RadioGroup>
+
+            <Button
+                android:id="@+id/fullscreenButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="3. 全屏观看（自动横屏 · 双击画面退出）" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/statsText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fontFamily="monospace"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>

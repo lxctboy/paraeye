@@ -31,3 +31,8 @@ Thumbs.db
 # ---- 测试截图/临时文件 ----
 paraeye/Screenshot_*
 *.tmp
+
+# ---- 用户丢进仓库根目录的截图（微信/PixPin 等，不属于工程文件）----
+微信图片_*
+PixPin_*
+Screenshot_*-*_*.jpg

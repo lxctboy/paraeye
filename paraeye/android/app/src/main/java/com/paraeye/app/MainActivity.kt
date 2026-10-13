@@ -1,5 +1,6 @@
 package com.paraeye.app
 
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -7,6 +8,9 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.RadioGroup
@@ -44,6 +48,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var modelGroup: RadioGroup
     private lateinit var runButton: Button
     private lateinit var playButton: Button
+    private lateinit var controlPanel: View
+    private lateinit var fullscreenButton: Button
 
     private var estimator: DepthEstimator? = null
     private var currentBitmap: Bitmap? = null
@@ -62,6 +68,21 @@ class MainActivity : ComponentActivity() {
     @Volatile private var videoMode = false
     @Volatile private var playing = false
 
+    /** 全屏观看（隐藏控制面板 + 沉浸式系统栏 + 自动横屏） */
+    private var fullscreen = false
+
+    /**
+     * 深度帧率上限（FPS，0 = 不限）。发热控制的关键旋钮：
+     * 推理占空比 ≈ 深度FPS × 单帧耗时。280×518 下 165.8ms/帧，
+     * 不限≈5.5FPS → 90% 占空比（发热主因）；3FPS → 50%；2FPS → 33%。
+     * 低于目标间隔时 consumer.busy 返回 true，渲染器跳过本帧派发
+     * （不取缓冲、无需 recycle），CPU 自然空闲，EMA 逐帧插值兜底平滑。
+     */
+    @Volatile private var depthFpsCap = 0
+
+    /** 上一次派发推理的时刻（GL 线程写、GL 线程读） */
+    @Volatile private var lastInferAtMs = 0L
+
     private val statsHandler = Handler(Looper.getMainLooper())
     private val statsTask = object : Runnable {
         override fun run() {
@@ -76,7 +97,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 statsText.text = buildString {
-                    appendLine("实时流水线 (${modelType.label} / $acc)")
+                    appendLine("实时流水线 (${modelType.label} / $acc" +
+                        if (depthFpsCap > 0) " · 深度≤${depthFpsCap}FPS" else "" + ")")
                     appendLine("视频帧率: %.1f FPS".format(renderer.videoFps))
                     appendLine("深度更新: %.1f FPS".format(renderer.depthFps))
                     appendLine("单帧推理: %.1f ms".format(lastInferMs))
@@ -108,6 +130,8 @@ class MainActivity : ComponentActivity() {
         modelGroup = findViewById(R.id.modelGroup)
         runButton = findViewById(R.id.runButton)
         playButton = findViewById(R.id.playButton)
+        controlPanel = findViewById(R.id.controlPanel)
+        fullscreenButton = findViewById(R.id.fullscreenButton)
         glView = findViewById(R.id.glView)
 
         renderer = SbsRenderer()
@@ -190,12 +214,37 @@ class MainActivity : ComponentActivity() {
                 renderer.videoFlipY = isChecked
             }
 
+        findViewById<RadioGroup>(R.id.depthCapGroup)
+            .setOnCheckedChangeListener { _, checkedId ->
+                depthFpsCap = when (checkedId) {
+                    R.id.radioCap5 -> 5
+                    R.id.radioCap4 -> 4
+                    R.id.radioCap3 -> 3
+                    R.id.radioCap2 -> 2
+                    else -> 0 // 不限
+                }
+            }
+
+        fullscreenButton.setOnClickListener { setFullscreen(!fullscreen) }
+
+        // 双击画面切换全屏（控制面板遮住的地方用按钮，露出的画面区域用双击）
+        val tapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                setFullscreen(!fullscreen)
+                return true
+            }
+        })
+        glView.setOnTouchListener { _, event -> tapDetector.onTouchEvent(event) }
+
         statusText.text = "选图片做单帧验证，或选视频跑实时流水线。SBS 请用平行眼观看"
     }
 
     override fun onResume() {
         super.onResume()
         glView.onResume()
+        // 系统栏可能因回桌面/通知栏重现，全屏状态下每次回前台补一次沉浸式
+        if (fullscreen) applyImmersive(true)
         if (videoMode) renderer.setPaused(!playing)
         statsHandler.post(statsTask)
     }
@@ -222,11 +271,47 @@ class MainActivity : ComponentActivity() {
         gpuFallbackNotified = false
     }
 
+    // ---------------- 全屏观看 ----------------
+
+    /** 切换全屏：隐藏控制面板 + 沉浸式系统栏 + 自动横屏（SBS 是横宽高比 1440x1280） */
+    private fun setFullscreen(on: Boolean) {
+        fullscreen = on
+        controlPanel.visibility = if (on) View.GONE else View.VISIBLE
+        fullscreenButton.text = if (on) "退出全屏" else "3. 全屏观看（自动横屏 · 双击画面退出）"
+        applyImmersive(on)
+        // 进全屏优先横屏（letterbox 后 SBS 才能铺满）；退出后交还传感器决定
+        requestedOrientation = if (on) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyImmersive(on: Boolean) {
+        window.decorView.systemUiVisibility = if (on) {
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        } else {
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+    }
+
     private val frameConsumer = object : FrameDepthConsumer {
-        override val busy: Boolean get() = inflight
+        override val busy: Boolean
+            get() = inflight ||
+                // 深度帧率上限：距上次派发不足目标间隔时假装忙，
+                // 渲染器便跳过本帧（缓冲留在池中，无需 recycle）
+                (depthFpsCap > 0 &&
+                    System.currentTimeMillis() - lastInferAtMs < 1000L / depthFpsCap)
 
         override fun onFrameForDepth(rgba: ByteArray) {
             // P3.5：rgba 来自渲染器双缓冲池，无需拷贝；用完 recycle 归还
+            lastInferAtMs = System.currentTimeMillis()
             inflight = true
             inferExecutor.execute {
                 try {
