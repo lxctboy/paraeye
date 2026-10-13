@@ -64,19 +64,18 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 上面两步用 continue-on-error 让摘要步骤能跑；这里做最终判定，避免假绿
+      # 上面两步用 continue-on-error 让摘要步骤能执行；这里按outcome 做最终判定，避免假绿
+      # （不用 always()：成功路径下这两步 outcome 本就是 success，无需强制执行）
       - name: Verify build and tests succeeded
-        if: ${{ always() }}
+        if: ${{ steps.debugBuild.outcome != 'success' || steps.unitTests.outcome != 'success' }}
         run: |
-          set -uo pipefail
-          failed=0
-          [ "${{ steps.debugBuild.outcome }}" = "success" ] || failed=1
-          [ "${{ steps.unitTests.outcome }}" = "success" ] || failed=1
-          if [ "$failed" -ne 0 ]; then
-            echo "::error::构建或单测未通过（debugBuild=${{ steps.debugBuild.outcome }}, unitTests=${{ steps.unitTests.outcome }}），详见上方摘要"
-            exit 1
-          fi
-          echo "构建与单测均通过"
+          {
+            echo "### ❌ 构建或单测未通过"
+            echo "- debugBuild: ${{ steps.debugBuild.outcome }}"
+            echo "- unitTests: ${{ steps.unitTests.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::构建或单测未通过（debugBuild=${{ steps.debugBuild.outcome }}, unitTests=${{ steps.unitTests.outcome }}），详见上方摘要"
+          exit 1
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
       - name: Decode release keystore
