@@ -8,10 +8,14 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# ---- 模型文件（不进 Git，构建时由 downloadDepthModels 从 HuggingFace 下载）----
+# ---- 模型文件（不进 Git，构建时由 downloadDepthModels 从 GitHub release 下载）----
 *.tflite
 *.litertlm
 paraeye/android/app/src/main/assets/models/
+
+# ---- P4 导出/验证产物（下载的模型 + 从 CI 拉回来的 APK）----
+paraeye/p4/models/
+paraeye/p4/dist/
 
 # ---- P0 产物（大文件，按需保留）----
 *.mp4
