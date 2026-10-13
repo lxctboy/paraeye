@@ -336,7 +336,8 @@ class AudioPlayer(
         runCatching {
             t.pause()
             t.flush()
-            t.setPlaybackHeadPosition(0L)
+            // setPlaybackHeadPosition 的参数是「帧数」且类型为 Int，不是微秒/Long
+            t.setPlaybackHeadPosition(0)
             if (!paused) t.play()
         }
     }
