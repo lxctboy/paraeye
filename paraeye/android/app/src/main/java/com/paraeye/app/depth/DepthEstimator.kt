@@ -49,12 +49,40 @@ class DepthEstimator(private val context: Context) {
 
     val isLoaded: Boolean get() = model != null
 
+    /**
+     * 请求了 GPU 但因兼容性失败、已回退 CPU 时为 true。
+     *
+     * 根因（2026-10-13 真机复测发现）：自导出的 280×518 模型走
+     * torch.export → litert-torch 转换， lowering 出的 TFLite 图含
+     * GATHER_ND / SELECT_V2 / BROADCAST_TO 等 LiteRT GPU delegate
+     * 不支持的算子（社区 686×518 原版没有这些，故 GPU 一直可用），
+     * 真机上 CompiledModel.create(GPU) 直接抛异常。
+     * CPU 是主力配置（GPU 与 GL 渲染争抢会导致视频卡顿），因此回退而非报错。
+     */
+    @Volatile var gpuFallback = false
+        private set
+
     /** 加载（或复用）模型；参数变化时重载。返回是否加载成功。 */
     fun ensureLoaded(modelType: ModelType, useGpu: Boolean, useFp16: Boolean = false): Boolean {
         val key = "${modelType.name}:$useGpu:$useFp16"
         if (key == loadedKey && model != null) return true
         close()
-        return try {
+        gpuFallback = false
+        if (tryLoad(modelType, useGpu, useFp16)) {
+            loadedKey = key
+            return true
+        }
+        // GPU 不受支持时回退 CPU（见 gpuFallback 注释），保证流水线不断
+        if (useGpu && tryLoad(modelType, useGpu = false, useFp16 = false)) {
+            loadedKey = key
+            gpuFallback = true
+            return true
+        }
+        return false
+    }
+
+    private fun tryLoad(modelType: ModelType, useGpu: Boolean, useFp16: Boolean): Boolean =
+        try {
             val accelerator = if (useGpu) Accelerator.GPU else Accelerator.CPU
             val options = CompiledModel.Options(accelerator).apply {
                 if (useGpu) {
@@ -77,14 +105,11 @@ class DepthEstimator(private val context: Context) {
                 }
             }
             model = CompiledModel.create(context.assets, modelType.assetName, options, null)
-            loadedKey = key
             true
         } catch (e: Exception) {
             model = null
-            loadedKey = null
             false
         }
-    }
 
     /** 单帧推理：bitmap 任意尺寸，内部拉伸到模型输入。 */
     fun infer(bitmap: Bitmap): DepthResult {

@@ -67,8 +67,13 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (videoMode) {
                 val acc = buildString {
-                    append(if (useGpu) "GPU" else "CPU")
-                    if (useGpu && useFp16) append("/FP16")
+                    if (useGpu && estimator?.gpuFallback == true) {
+                        // GPU delegate 编译不了自导出模型，已回退 CPU（见 DepthEstimator.gpuFallback）
+                        append("GPU→CPU（不受支持）")
+                    } else {
+                        append(if (useGpu) "GPU" else "CPU")
+                        if (useGpu && useFp16) append("/FP16")
+                    }
                 }
                 statsText.text = buildString {
                     appendLine("实时流水线 (${modelType.label} / $acc)")
@@ -213,6 +218,8 @@ class MainActivity : ComponentActivity() {
     private fun onConfigChanged() {
         // 换模型/加速器后时域平滑的历史深度失效
         renderer.resetDepthSmoother()
+        // 允许再次提示 GPU 回退（用户可能切走了又切回 GPU）
+        gpuFallbackNotified = false
     }
 
     private val frameConsumer = object : FrameDepthConsumer {
@@ -246,10 +253,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Volatile private var gpuFallbackNotified = false
+
     private fun ensureEstimator(): DepthEstimator {
         val est = estimator ?: DepthEstimator(applicationContext).also { estimator = it }
         if (!est.ensureLoaded(modelType, useGpu, useFp16)) {
-            error("模型加载失败（GPU 不受支持时请改用 CPU）")
+            error("模型加载失败（GPU 与 CPU 均无法加载模型）")
+        }
+        if (est.gpuFallback && !gpuFallbackNotified) {
+            gpuFallbackNotified = true
+            runOnUiThread {
+                statusText.text = "GPU 不受支持（自导出模型含 GPU delegate 不支持的算子），已回退 CPU"
+            }
         }
         return est
     }
