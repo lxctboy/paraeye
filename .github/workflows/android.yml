@@ -45,10 +45,14 @@ jobs:
           {
             echo "### assembleDebug 失败摘要"
             echo '```'
-            grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|Execution failed" \
-              paraeye/android/build.log 2>/dev/null | head -40 || echo "(未捕获到 build.log)"
+            cat paraeye/android/build.log 2>/dev/null | head -60 || echo "(未捕获到 build.log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # 把整份 build.log 转成 annotation：无 admin 权限也能通过 annotations API 读取
+          echo "::error title=assembleDebug failed, build.log::see annotations below"
+          cat paraeye/android/build.log 2>/dev/null | sed 's/::/ - /g' | cut -c1-4000 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
 
       - name: Run unit tests
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
