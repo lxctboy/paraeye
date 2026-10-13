@@ -20,15 +20,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper
-      # 失败时把编译/单测错误摘要写进 job summary（否则只能翻全量日志定位）
-      - name: Build debug APK
-        id: debugBuild
+      - name: Set up Gradle
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.11.1'
-          build-root-directory: paraeye/android
-          arguments: assembleDebug --console=plain
+          cache-read-only: true
+
+      # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper
+      # 失败时把编译/单测错误摘要写进 job summary（否则只能翻全量日志定位）。
+      # 自己 tee 日志落盘：Verify 步骤要读它判断成败，action 内建输出取不到。
+      - name: Build debug APK
+        id: debugBuild
+        run: |
+          set -uo pipefail
+          cd paraeye/android
+          gradle assembleDebug --console=plain 2>&1 | tee build.log
+          exit "${PIPESTATUS[0]}"
         continue-on-error: true
 
       - name: Build summary (debug)
@@ -44,51 +51,54 @@ jobs:
 
       - name: Run unit tests
         id: unitTests
-        uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: '8.11.1'
-          build-root-directory: paraeye/android
-          arguments: testDebugUnitTest --console=plain
+        run: |
+          set -uo pipefail
+          cd paraeye/android
+          gradle testDebugUnitTest --console=plain 2>&1 | tee test.log
+          exit "${PIPESTATUS[0]}"
         continue-on-error: true
 
       - name: Test summary
-        if: ${{ steps.unitTests.outcome == 'failure' }}
+        if: ${{ failure() && steps.unitTests.outcome != 'skipped' }}
         run: |
           {
             echo "### testDebugUnitTest 失败摘要"
             echo '```'
             grep -nE "^e: |error:|FAILED|tests completed" \
-              paraeye/android/build.log 2>/dev/null | head -40 || echo "(未捕获到 build.log)"
+              paraeye/android/test.log 2>/dev/null | head -40 || echo "(未捕获到 test.log)"
             find paraeye/android/app/build/reports/tests -name '*.html' 2>/dev/null \
               | head -5 | sed 's/^/- 报告: /' || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 最终判定：读 gradle-build-action 写在GITHUB_OUTPUT 里的 build-scan/退出码不可靠，
-# 直接查build.log 里的结果标记，最稳妥
+      # 最终判定：读我们 tee 落盘的日志标记，不依赖 action outcome 语义
       - name: Verify build and tests succeeded
         run: |
           set -uo pipefail
-          log=paraeye/android/build.log
-          if [ ! -f "$log" ]; then
-            echo "::error::未生成 $log，构建异常终止"
-            exit 1
-          fi
-          # assembleDebug 与 testDebugUnitTest 各自追加日志，判断最后一次结果
-          if grep -q "BUILD FAILED" "$log"; then
-            echo "### ❌ 构建失败"
-            echo '```'
-            grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|tests? completed .*failed" "$log" | head -30
-            echo '```'
-            echo "::error::Gradle 构建失败，详见上方摘要"
-            exit 1
-          fi
-          if ! grep -q "BUILD SUCCESSFUL" "$log"; then
-            echo "::error::$log 中未找到 BUILD SUCCESSFUL"
-            tail -20 "$log"
-            exit 1
-          fi
-          echo "✅ Gradle 构建与单测通过（$(grep -c 'BUILD SUCCESSFUL' "$log") 次成功标记）"
+          bad=0
+          for pair in "build.log:assembleDebug" "test.log:testDebugUnitTest"; do
+            log="paraeye/android/${pair%%:*}"
+            task="${pair##*:}"
+            if [ ! -f "$log" ]; then
+              echo "::error::$task 未生成 $log，异常终止"
+              bad=1
+            elif grep -q "BUILD FAILED" "$log"; then
+              {
+                echo "### ❌ $task 失败"
+                echo '```'
+                grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|tests? completed" "$log" | head -30
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$task 失败，详见摘要"
+              bad=1
+            elif ! grep -q "BUILD SUCCESSFUL" "$log"; then
+              echo "::error::$task 日志中既无 SUCCESSFUL 也无 FAILED，异常终止"
+              tail -15 "$log"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] && echo "✅ assembleDebug 与 testDebugUnitTest 均通过"
+          exit "$bad"
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
       - name: Decode release keystore
