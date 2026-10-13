@@ -20,15 +20,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 安装固定版本的 Gradle（不启用依赖缓存服务的 caching，
+      # 本仓库 build-root 在 paraeye/android 且需自管日志输出）。
       - name: Set up Gradle
-        uses: gradle/gradle-build-action@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-          cache-read-only: true
+          caching: disabled
 
-      # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper
+      # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper。
+      # 自己 tee 日志落盘：Verify 步骤读它判成败，action 内建输出取不到。
       # 失败时把编译/单测错误摘要写进 job summary（否则只能翻全量日志定位）。
-      # 自己 tee 日志落盘：Verify 步骤要读它判断成败，action 内建输出取不到。
       - name: Build debug APK
         id: debugBuild
         run: |
@@ -71,7 +73,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 最终判定：读我们 tee 落盘的日志标记，不依赖 action outcome 语义
+      # 最终判定：读我们 tee 落盘的日志标记，不依赖 action outcome 语义。
+      # 诊断信息全部 echo 到本步骤 stdout（build.log 不作为 artifact 上传，本步骤
+      #输出是公有仓库无需认证就能看到的最短路径）。
       - name: Verify build and tests succeeded
         run: |
           set -uo pipefail
@@ -79,25 +83,32 @@ jobs:
           for pair in "build.log:assembleDebug" "test.log:testDebugUnitTest"; do
             log="paraeye/android/${pair%%:*}"
             task="${pair##*:}"
+            echo "--- $task ($log) ---"
             if [ ! -f "$log" ]; then
-              echo "::error::$task 未生成 $log，异常终止"
+              echo "DIAG:missing $log"
               bad=1
-            elif grep -q "BUILD FAILED" "$log"; then
-              {
-                echo "### ❌ $task 失败"
-                echo '```'
-                grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|tests? completed" "$log" | head -30
-                echo '```'
-              } >> "$GITHUB_STEP_SUMMARY"
-              echo "::error::$task 失败，详见摘要"
+              continue
+            fi
+            echo "DIAG: bytes=$(stat -c %s "$log") lines=$(wc -l < "$log")"
+            echo "DIAG: BUILD_FAILED_hits=$(grep -c 'BUILD FAILED' "$log" || true)"
+            echo "DIAG: BUILD_SUCCESSFUL_hits=$(grep -c 'BUILD SUCCESSFUL' "$log" || true)"
+            echo "DIAG: tail:"
+            tail -5 "$log" | sed 's/^/TAIL| /'
+            if grep -q "BUILD FAILED" "$log"; then
+              echo "DIAG: verdict=$task FAILED"
               bad=1
             elif ! grep -q "BUILD SUCCESSFUL" "$log"; then
-              echo "::error::$task 日志中既无 SUCCESSFUL 也无 FAILED，异常终止"
-              tail -15 "$log"
+              echo "DIAG: verdict=$task NO_MARKER"
               bad=1
+            else
+              echo "DIAG: verdict=$task OK"
             fi
           done
-          [ "$bad" -eq 0 ] && echo "✅ assembleDebug 与 testDebugUnitTest 均通过"
+          if [ "$bad" -eq 0 ]; then
+            echo "✅ assembleDebug 与 testDebugUnitTest 均通过"
+          else
+            echo "::error::存在未通过的步骤，诊断信息见上"
+          fi
           exit "$bad"
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
