@@ -1,4 +1,7 @@
-# ParaEye Android（P1 + P2 + P3 + P3.5）
+# ParaEye 3D（Android）
+
+把本地视频/图片实时转成裸眼平行眼 Full-SBS 3D。当前版本 **v1.1.0（播放器版）**：
+https://github.com/lxctboy/paraeye/releases/tag/v1.1.0
 
 阶段目标：
 
@@ -6,6 +9,25 @@
 - **P2**：GPU 视图合成——深度驱动左右眼 warp，输出 Full-SBS，可在手机上直接观看 3D ✅（真机验证通过）
 - **P3**：本地视频实时流水线——MediaCodec 硬解 → GPU 归一化/降采样 → 异步推理 → SBS 实时渲染 ✅（编译通过，真机跑通）
 - **P3.5**：帧率优化——预处理 LUT/预分配、GL↔推理零拷贝、渲染线程逐帧深度过渡（治 6FPS 跳变）、GPU FP16 选项 ✅
+- **P3.6**：全屏观看（沉浸式 + 双眼紧邻渲染）、深度帧率上限控发热 ✅
+- **P4**：输入降分辨率 280×518（真机 165.8ms / 深度 5.5FPS / 视频 60FPS）；摄像头流按用户决定跳过 ✅
+- **v1.1.0**：界面播放器化（进度条 + seek、大播放键、chrome 自动隐藏、底部抽屉设置）+ 自适应图标 + 正式签名发布 ✅
+
+## 界面（v1.1.0 播放器）
+
+画面层常驻全屏，UI 分三层浮在上面：
+
+| 层 | 内容 | 交互 |
+| -- | ---- | ---- |
+| 顶部遮罩 | 应用名 + 当前状态（分辨率/时长/推理提示） | 右上齿轮展开设置抽屉 |
+| 右上浮层 | 视频 FPS / 深度 FPS / 单帧耗时 / 后端 | 随 chrome 一起显隐 |
+| 底部控制条 | 进度条 + `当前/总长`、`视频`/`图片`、播放/暂停、全屏 | 单击画面显隐；播放中 3.5s 自动隐藏；双击切换全屏 |
+
+- **暂停时**居中显示大播放键；空态时居中显示「选个视频开始 3D 播放」
+- **设置抽屉**（底部）：视差滑块、显示内容（SBS 3D / 深度图）、观看方式（交换左右眼 / 上下翻转）、
+  深度帧率上限（不限/5/4/3/2，控发热）、推理后端（CPU/GPU + FP16）、单帧「生成 3D」
+- **进度条支持拖动 seek**：解码线程 `flush` + `seekTo` 最近关键帧并重锚墙钟节奏（GOP 内对齐）
+- 图片路径选完图**自动出 3D**（不再多点一次按钮）；换推理后端会自动重算
 
 ## 技术栈
 
@@ -45,27 +67,33 @@ gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一�
 
 **CI**：push 到 `main` 时构建 debug APK + 跑单测，artifact 名 `paraeye-debug-apk`（无需本地 JDK/SDK）。打 `v*` tag 时额外解出签名 keystore、出**正式签名** release APK，并自动挂到该 tag 的 GitHub Release（artifact 名 `paraeye-release-apk`）。
 
-**发布签名**：keystore 由 `paraeye/p4/setup_release_signing.py` 一次性生成（PKCS12 / RSA 2048 / alias `paraeye` / 25 年），本地文件在 `paraeye/release/`（已 gitignore，**务必自行备份，丢失后无法给已安装应用发更新**）。脚本同时把四条写入 GitHub Actions Secrets：`PARAKEYSTORE_B64`、`PARAKEYSTORE_PASSWORD`、`PARAKEY_ALIAS`、`PARAKEY_PASSWORD`；`build.gradle.kts` 只在拿到 `PARAKEYSTORE_PATH` 时启用签名，缺失则退回未签名构建，不会卡 CI。
+**发布签名**：keystore 由 `paraeye/p4/setup_release_signing.py` 一次性生成（PKCS12 / RSA 2048 / alias `paraeye` / 25 年），本地文件在 `paraeye/release/`（已 gitignore，**务必自行备份，丢失后无法给已安装应用发更新**）。脚本同时把三条写入 GitHub Actions Secrets：`PARAKEYSTORE_B64`、`PARAKEYSTORE_PASSWORD`、`PARAKEY_ALIAS`；PKCS12 只有一档口令（storePassword 与 keyPassword 相同），`build.gradle.kts` 只在拿到 `PARAKEYSTORE_PATH` 时启用签名，缺失则退回未签名构建，不会卡 CI。
+
+## 应用图标
+
+自适应图标（`mipmap-anydpi-v26/ic_launcher.xml`）：靛蓝渐变背景 + 眼睛/播放三角前景 + Android 13 monochrome 主题图标层。设计校验用 `python paraeye/p4/tools/icon_preview.py <输出目录>`（Pillow 复刻同一几何出 PNG 预览，不进 APK）。
 
 ## 使用
 
-### 静态图（P1/P2 单帧验证）
+### 视频（实时 3D 播放，主路径）
 
-1. 「选择图片」从相册选一张（自动降采样到 2048 长边防 OOM）
-2. 选加速器 CPU/GPU × 模型 INT8/FP32
-3. 「生成 3D」：推理一次 + 跑基准，随即由 GL 渲染到下方画布
-4. **视差滑块**：实时调 0~3%（默认 1%，P0 定档），改完立刻重绘，用于复现 P0 参数扫描
+1. 底部点「视频」选一段本地视频（**自动循环播放**）
+2. 底部控制条：拖动进度条跳转、点播放键暂停/继续（暂停时画面停在当前帧，适合细看立体感）
+3. 点画面显隐控制条（播放中 3.5s 自动隐藏），双击切全屏
+4. 右上齿轮打开设置抽屉：视差强度、显示内容（SBS 3D / 深度图）、交换左右眼（交叉眼观看）、
+   深度帧率上限（控发热）、推理后端 CPU/GPU（+FP16）
+5. 右上浮层实时显示视频 FPS / 深度更新 FPS / 单帧推理耗时
+6. 画面上下颠倒时在抽屉里勾「上下翻转」（部分机型 OES 变换矩阵方向相反，见下方已知边界）
 
-### 视频（P3 实时流水线）
+### 图片（单帧 3D）
 
-1. 「选择视频」从相册选一段本地视频（自动循环播放）
-2. 选 CPU/GPU × INT8/FP32 —— **实时场景建议先试 INT8**；GPU 上 INT8 不会更快（GPU delegate 权重按 FP32 执行，见下）
-3. 画面直接以 SBS 实时渲染；状态区显示视频帧率 / 深度更新帧率 / 单帧推理耗时
-4. 画面上下颠倒时勾选「视频上下翻转」（部分机型 OES 变换矩阵方向相反，见下方已知边界）
-5. 「GPU FP16」复选框：仅 GPU 有效，通常快 1.3~2 倍、精度略降，可自行对比深度图质量
-6. 「暂停播放」后画面停在当前帧，适合静态观察某一帧的立体感
+1. 底部点「图片」从相册选一张（自动降采样到 2048 长边防 OOM），**选完自动出 3D**
+2. 抽屉里调视差（默认 1%，P0 定档）与显示内容；换后端会自动重算
+3. 抽屉底部显示单帧基准（迭代次数、平均/min/p50/max 耗时）
 
-> **GPU × INT8 为何不更快**：LiteRT GPU delegate 对 wi8/afp32 模型按 FP32 精度执行（`GpuOptions.Precision.FP32` 是 DA 解码器动态范围的保险默认），所以 GPU×INT8 与 GPU×FP32 耗时几乎相同（实测 177ms vs 176.8ms）。GPU 上要更快只有两条路：勾 FP16，或换更强的 GPU。
+> **实时场景建议 CPU + INT8**：GPU delegate 对 wi8/afp32 模型按 FP32 精度执行（`GpuOptions.Precision.FP32` 是 DA 解码器动态范围的保险默认），所以 GPU×INT8 与 GPU×FP32 耗时几乎相同（实测 177ms vs 176.8ms）；且自导出的模型含 GPU delegate 不支持的算子（GATHER_ND 等），app 会自动回退 CPU。GPU 上要更快只有两条路：勾 FP16，或换更强的 GPU。
+>
+> **发热**：推理占空比 ≈ 深度 FPS × 单帧耗时。165.8ms/帧下不限≈5.5FPS 即 90% 占空比（发热主因），抽屉里设 3 → 50%、2 → 33%，EMA 会逐帧插值兜底平滑。
 
 ## P3 流水线结构
 
@@ -149,5 +177,7 @@ MediaExtractor ──▶ MediaCodec(硬解) ──▶ Surface(OES 纹理)
 - 空洞内插（P0 的 inpaint）尚未移植到 GL；当前靠 CLAMP_TO_EDGE 拉伸，近景边缘可能有轻微涂抹
 - **OES 方向**：按 Grafika 约定推导（原始 `t=1` 对应视频顶部），部分机型/片源可能相反，故保留「上下翻转」开关而非硬编码
 - 视频旋转元数据（`KEY_ROTATION`）未处理：竖屏录制但带 90° 旋转标记的视频可能显示不正确，先用翻转开关兜底
-- 全屏观看：GL 铺满全屏 + 控制面板半透明覆盖层；进全屏自动转横屏（SBS 为 1440×1280 横宽高比，竖屏 letterbox 黑边大），`configChanges` 保证旋转不中断播放
+- 全屏观看：点画面或双击进入，沉浸式系统栏 + chrome 收起；**不强制横屏**（竖屏片源裸眼观看本就是竖屏布局，强制横屏会把两眼撑出中间黑带导致无法融合）；`configChanges` 保证旋转不中断播放
+- **seek 精度**：`SEEK_TO_PREVIOUS_SYNC` 对齐到目标之前最近关键帧，误差一个 GOP；进度条拖到任意位置都能播，只是落点可能略早于拖动目标
+- 进度条在图片模式下禁用（显示「图片 · 单帧」）；暂停时位置不再前进，属预期
 - 摄像头实时流：**已跳过（2026-10-13 用户决定）**，不再做；视频保存（≤1920×1080 + 3D 元数据）在 P5
