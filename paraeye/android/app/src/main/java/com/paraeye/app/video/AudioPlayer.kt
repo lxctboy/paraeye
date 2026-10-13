@@ -162,8 +162,10 @@ class AudioPlayer(
 
     private fun decodeLoop() {
         val ex = MediaExtractor()
-        runCatching { ex.setDataSource(context, uri, null) }.onFailure {
-            Log.w(TAG, "无法打开音频源，静默降级为无声播放", it)
+        val opened = runCatching { ex.setDataSource(context, uri, null) }
+        if (opened.isFailure) {
+            Log.w(TAG, "无法打开音频源，静默降级为无声播放", opened.exceptionOrNull())
+            hasAudio = false
             running = false
             return
         }
@@ -252,7 +254,7 @@ class AudioPlayer(
             val videoUs = referencePositionUs()
             val audioUs = audioPositionUs(sampleRate)
             if (AvSync.needsResync(audioUs, videoUs, sinceCheck)) {
-                Log.i(TAG, "A/V 漂移 ${AvSync.driftMs(audioUs, videoUs)}ms，重新对齐")
+                Log.i(TAG, "A/V 漂移 ${AvSync.driftMsOrZero(audioUs, videoUs)}ms，重新对齐")
                 pendingSeekUs = videoUs
                 continue
             }
@@ -358,9 +360,11 @@ class AudioPlayer(
         } else {
             AudioFormat.CHANNEL_IN_MONO
         }
+        // getMinBufferSize 失败时返回负值错误码，不能直接参与 maxOf，否则缓冲可能算成负数
         val minBytes = AudioTrack.getMinBufferSize(sampleRate, channelMask, encoding)
+            .let { if (it > 0) it else 0 }
         val bytesPerSample = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) 4 else 2
-        // 缓冲取 4 帧 chunk：够小则延迟低，够大则不会频繁阻塞
+        // 50ms 一块的缓冲：够小则延迟低，够大则不会频繁阻塞
         val chunkBytes = sampleRate / 20 * channels * bytesPerSample
         val bufferBytes = maxOf(minBytes, chunkBytes)
 

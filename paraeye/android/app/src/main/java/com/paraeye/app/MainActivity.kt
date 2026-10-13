@@ -152,11 +152,12 @@ class MainActivity : ComponentActivity() {
         }
         // 音频焦点被抢占：音频侧已自行暂停，这里把 UI 也切回暂停态，避免按钮显示"正在播放"
         renderer.onAudioFocusLost = {
-            if (!playing) return@onAudioFocusLost
-            playing = false
-            syncPlayIcons()
-            refreshIdleHints()
-            showChrome(autoHide = false)
+            if (playing) {
+                playing = false
+                syncPlayIcons()
+                refreshIdleHints()
+                showChrome(autoHide = false)
+            }
         }
 
         wirePlayerControls()

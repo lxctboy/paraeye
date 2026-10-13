@@ -23,6 +23,10 @@ object AvSync {
         return (audioPositionUs - videoPositionUs) / 1000L
     }
 
+    /** 同 [driftMs]，但未知时返回 0（日志场景下比 null 好用） */
+    fun driftMsOrZero(audioPositionUs: Long, videoPositionUs: Long): Long =
+        driftMs(audioPositionUs, videoPositionUs) ?: 0L
+
     /** 是否需要硬同步：差值超过阈值才算，且冷却期已过 */
     fun needsResync(
         audioPositionUs: Long,
