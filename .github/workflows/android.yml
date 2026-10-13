@@ -43,14 +43,16 @@ jobs:
         if: ${{ failure() && !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           {
-            echo "### assembleDebug 失败摘要"
+            echo "### assembleDebug 失败摘要（build.log 末尾 80 行）"
             echo '```'
-            cat paraeye/android/build.log 2>/dev/null | head -60 || echo "(未捕获到 build.log)"
+            tail -80 paraeye/android/build.log 2>/dev/null || echo "(未捕获到 build.log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # 把整份 build.log 转成 annotation：无 admin 权限也能通过 annotations API 读取
-          echo "::error title=assembleDebug failed, build.log::see annotations below"
-          cat paraeye/android/build.log 2>/dev/null | sed 's/::/ - /g' | cut -c1-4000 | while IFS= read -r line; do
+          # 关键：Gradle 把真实错误放在日志**末尾**，开头只有 banner。
+          # 只把错误行转成 annotation（annotations 只保留前几条，务必精准）。
+          echo "::error title=assembleDebug failed::错误行见下方 annotations"
+          grep -nE "^e: |error:|^FAILURE:|What went wrong|Execution failed for task|Caused by:|Could not |Unresolved reference|FAILURE: Build" \
+            paraeye/android/build.log 2>/dev/null | tail -8 | sed 's/::/ - /g' | cut -c1-2000 | while IFS= read -r line; do
             echo "::error::${line}"
           done
 
@@ -66,14 +68,18 @@ jobs:
         if: ${{ failure() && !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           {
-            echo "### testDebugUnitTest 失败摘要"
+            echo "### testDebugUnitTest 失败摘要（test.log 末尾 60 行）"
             echo '```'
-            grep -nE "^e: |error:|FAILED|tests completed" \
-              paraeye/android/test.log 2>/dev/null | head -40 || echo "(未捕获到 test.log)"
+            tail -60 paraeye/android/test.log 2>/dev/null || echo "(未捕获到 test.log)"
+            echo '```'
             find paraeye/android/app/build/reports/tests -name '*.html' 2>/dev/null \
               | head -5 | sed 's/^/- 报告: /' || true
-            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=testDebugUnitTest failed::错误行见下方 annotations"
+          grep -nE "^e: |error:|^FAILURE:|FAILED|tests completed|What went wrong|Execution failed for task|Caused by:" \
+            paraeye/android/test.log 2>/dev/null | tail -8 | sed 's/::/ - /g' | cut -c1-2000 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
 
       # 日志落盘为 artifact（无需 admin 即可下载），远端排障最短路径。
       # 用 always() 覆盖：构建失败时也能把 build.log 传上来，否则只能盲猜。
