@@ -179,7 +179,8 @@ void main() {
     }
 
     // ---- 以下字段由 UI 线程写入，GL 线程读取 ----
-    @Volatile var maxDispRatio = 0.01f   // P0 定档：总视差 1% 图像宽度
+    // P0 定档 1%；真机反馈 1% 在手机尺寸上几乎不可感知（v1.3.0 起默认 2%）
+    @Volatile var maxDispRatio = 0.02f   // 总视差（以图像宽度的比例计）
     @Volatile var mode: Int = MODE_SBS
     @Volatile var swapLr = false
     @Volatile var videoFlipY = false
@@ -201,6 +202,9 @@ void main() {
 
     @Volatile private var pendingBitmap: Bitmap? = null
     @Volatile private var pendingDepth: ByteArray? = null
+
+    /** 最近一次提交的静态帧（位图 + 深度 R8）：表面重建后重传，避免黑屏 */
+    @Volatile private var lastFrame: Pair<Bitmap, ByteArray>? = null
 
     /** 推理线程发布的最新归一化深度（引用先写内容后发布，volatile 保证可见性） */
     @Volatile private var depthTarget: FloatArray? = null
@@ -266,6 +270,24 @@ void main() {
     @Volatile private var pendingStart: Pair<Context, Uri>? = null
     @Volatile private var pendingStop = false
 
+    /**
+     * 最近一次成功启动的视频（app context, uri）。
+     * GL 表面重建（灭屏后亮屏、强制横竖屏切换）会销毁旧 SurfaceTexture，
+     * 解码器仍往旧对象出帧 → 画面冻结。onSurfaceCreated 记录待重启请求，
+     * 由 GL 线程的 handleVideoCommands 用新 SurfaceTexture 按保存位置续播。
+     */
+    @Volatile private var lastVideoStart: Pair<Context, Uri>? = null
+
+    /** 表面重建后的待重启请求（GL 线程消费） */
+    @Volatile private var pendingRestart: RestartInfo? = null
+
+    private class RestartInfo(
+        val context: Context,
+        val uri: Uri,
+        val positionUs: Long,
+        val paused: Boolean,
+    )
+
     private var uColor = 0
     private var uDepth = 0
     private var uFit = 0
@@ -286,6 +308,8 @@ void main() {
 
     /** 静态图路径（P2）：提交源图 + 深度 */
     fun submitFrame(bitmap: Bitmap, depthR8: ByteArray) {
+        // 留底：表面重建（强制横竖屏切换/亮屏）后重新入队，否则黑屏
+        lastFrame = bitmap to depthR8
         pendingBitmap = bitmap
         pendingDepth = depthR8
         depthTarget = null
@@ -395,6 +419,19 @@ void main() {
     // ---------------- Renderer ----------------
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        // 表面重建（灭屏后亮屏、强制横竖屏切换都会走到这里）：setPreserveEGLContextOnPause
+        // 只保 EGL 上下文，GL 对象不会自动回收——先删上一轮的再建，否则每次重建
+        // 都泄漏一组 program/texture/FBO
+        if (program != 0) GLES20.glDeleteProgram(program)
+        if (oesProgram != 0) GLES20.glDeleteProgram(oesProgram)
+        if (downProgram != 0) GLES20.glDeleteProgram(downProgram)
+        if (displayTex != 0) GLES20.glDeleteTextures(1, intArrayOf(displayTex), 0)
+        if (depthTex != 0) GLES20.glDeleteTextures(1, intArrayOf(depthTex), 0)
+        if (modelTex != 0) GLES20.glDeleteTextures(1, intArrayOf(modelTex), 0)
+        if (videoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(videoTex), 0)
+        if (displayFbo != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(displayFbo), 0)
+        if (modelFbo != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(modelFbo), 0)
+
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
 
@@ -435,6 +472,26 @@ void main() {
         smoother.reset()
         lastDrawNs = 0L
         windowStartMs = System.currentTimeMillis()
+
+        // 表面重建（灭屏后亮屏、强制横竖屏切换都会走到这里）：videoST 是新建的，
+        // 旧解码器还往旧 SurfaceTexture 出帧。记录重启请求，由下一次 onDrawFrame 的
+        // handleVideoCommands 在 GL 线程上用新 ST 重起（按保存位置续播）。
+        // 只此一条路径能修：息屏/亮屏后视频冻结（v1.3.0 前就存在的潜在坑）。
+        val last = lastVideoStart
+        val dec = videoDecoder
+        if (last != null && dec != null) {
+            pendingRestart = RestartInfo(
+                context = last.first,
+                uri = last.second,
+                positionUs = dec.positionUs,
+                paused = dec.paused,
+            )
+        }
+        // 静态图路径同理：重新入队上一帧，表面重建后不黑屏
+        lastFrame?.let { (bmp, r8) ->
+            pendingBitmap = bmp
+            pendingDepth = r8
+        }
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -534,7 +591,51 @@ void main() {
             audioPlayer = null
             videoDecoder?.release()
             videoDecoder = null
+            lastVideoStart = null
+            pendingRestart = null
+            lastFrame = null
             videoInfoSent = false
+            hasColor = false
+            hasDepth = false
+            depthTarget = null
+            smoother.reset()
+        }
+        pendingRestart?.let { r ->
+            // GL 表面重建后续播：旧解码器/播放器随旧 SurfaceTexture 一起失效，
+            // 用新 SurfaceTexture 重起并 seek 到保存位置（音画都从同一点继续）
+            pendingRestart = null
+            videoDecoder?.release()
+            videoDecoder = null
+            audioPlayer?.release()
+            audioPlayer = null
+            val st = videoST ?: return@let
+            // 重发 onVideoStarted：方向策略/状态文字随新表面重新应用一次（幂等）
+            videoInfoSent = false
+            val decoder = VideoDecoder(
+                context = r.context,
+                uri = r.uri,
+                surfaceTexture = st,
+                onFrame = { frameAvailable.set(true) },
+                onError = { msg -> mainPost { onVideoError?.invoke(msg) } },
+            )
+            videoDecoder = decoder
+            val player = AudioPlayer(
+                context = r.context,
+                uri = r.uri,
+                referencePositionUs = { decoder.positionUs },
+                onFocusPause = { mainPost { onAudioFocusLost?.invoke() } },
+            )
+            audioPlayer = player
+            player.setMuted(audioMuted)
+            player.start()
+            decoder.start()
+            if (r.positionUs > 0) {
+                // 音画都seek到保存位置：只seek视频的话音频从0起播，AvSync 会把视频拽回0
+                decoder.seekToMs(r.positionUs / 1000)
+                player.seekToMs(r.positionUs / 1000)
+            }
+            decoder.paused = r.paused
+            player.paused = r.paused
             hasColor = false
             hasDepth = false
             depthTarget = null
@@ -566,6 +667,8 @@ void main() {
             player.setMuted(audioMuted)
             player.start()
             decoder.start()
+            // 记住本次片源：表面重建时按此续播
+            lastVideoStart = ctx to uri
         }
     }
 

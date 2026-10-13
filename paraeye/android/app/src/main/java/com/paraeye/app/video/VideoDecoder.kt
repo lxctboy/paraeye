@@ -118,13 +118,26 @@ class VideoDecoder(
         }
         ex.selectTrack(trackIndex)
         val format = ex.getTrackFormat(trackIndex)
-        videoWidth = format.getInteger(MediaFormat.KEY_WIDTH)
-        videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
+        // 旋转元数据（KEY_ROTATION）：MediaCodec 按**编码尺寸**出帧，旋转由
+        // SurfaceTexture 的 transform matrix 施加（OES pass 已应用 uTexMtx）。
+        // 早年忽略它导致：竖拍视频（很多机型/App 存成 1920×1080 + rot90）被当成
+        // 横屏——内容拉伸进横屏纹理、喂深度模型的帧二次畸变（深度废掉）、SBS 整对
+        // 几何也全错（真机反馈「1920×1080 / 1080×1920 看不到 3D」的根因之一）。
+        // 对外暴露**显示尺寸**；setDefaultBufferSize 仍用编码尺寸（解码器真实输出）。
+        val rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+            format.getInteger(MediaFormat.KEY_ROTATION)
+        } else {
+            0
+        }
+        val codedW = format.getInteger(MediaFormat.KEY_WIDTH)
+        val codedH = format.getInteger(MediaFormat.KEY_HEIGHT)
+        videoWidth = if (rotation == 90 || rotation == 270) codedH else codedW
+        videoHeight = if (rotation == 90 || rotation == 270) codedW else codedH
         if (format.containsKey(MediaFormat.KEY_DURATION)) {
             durationUs = format.getLong(MediaFormat.KEY_DURATION)
         }
-        // 让 SurfaceTexture 的缓冲尺寸与视频一致，避免驱动额外缩放
-        surfaceTexture.setDefaultBufferSize(videoWidth, videoHeight)
+        // 让 SurfaceTexture 的缓冲尺寸与视频一致，避免驱动额外缩放（编码尺寸）
+        surfaceTexture.setDefaultBufferSize(codedW, codedH)
 
         val decoder = try {
             MediaCodec.createDecoderByType(mime)

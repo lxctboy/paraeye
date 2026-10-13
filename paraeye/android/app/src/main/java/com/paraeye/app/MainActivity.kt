@@ -1,5 +1,6 @@
 package com.paraeye.app
 
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -148,6 +149,8 @@ class MainActivity : ComponentActivity() {
         renderer.depthConsumer = frameConsumer
         renderer.onVideoError = { msg -> setStatus("视频失败：$msg") }
         renderer.onVideoStarted = { w, h, dur ->
+            // 横屏片源直接按横屏播放（SBS 整对 contain 在竖屏上只剩 13% 屏高）
+            applyOrientationForContent(w, h)
             setStatus("已加载 ${w}×${h} · %.1f 秒 · 实时 3D 中".format(dur / 1_000_000f))
         }
         // 音频焦点被抢占：音频侧已自行暂停，这里把 UI 也切回暂停态，避免按钮显示"正在播放"
@@ -326,6 +329,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 按片源方向请求屏幕方向（v1.3.0）。
+     *
+     * 根因（真机反馈「1920×1080 / 1080×1920 无法观看、看不到 3D」）：SBS 整对是
+     * (2×源宽 × 源高)，contain 到竖屏表面时，横屏片源只剩约 13% 屏高
+     * （1920×1080 → 1080×2352 上仅 303px 高）。图像太小 × 1% 视差 = 完全不可感知。
+     *
+     * 对策（播放器惯例）：横屏片源请求横屏——整对改为撑满屏高，单眼面积约为竖屏
+     * 条带的 3.8 倍，视差绝对值同比例放大；竖屏片源/图片仍跟随传感器
+     * （竖屏片源裸眼观看本就是竖屏布局）。方向切换由 configChanges 消化，
+     * GL 表面重建时 SbsRenderer 按保存位置续播，播放不中断。
+     */
+    private fun applyOrientationForContent(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        requestedOrientation = if (w > h) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_USER
+        }
+    }
+
     private fun wireGesture() {
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
@@ -353,7 +377,7 @@ class MainActivity : ComponentActivity() {
                 renderer.maxDispRatio = ratio
                 dispLabel.text = "当前 %.1f%%%s".format(
                     ratio * 100f,
-                    if (progress == 10) " · P0 定档默认" else ""
+                    if (progress == 20) " · 推荐默认" else ""
                 )
                 glView.requestRender()
             }
@@ -361,7 +385,7 @@ class MainActivity : ComponentActivity() {
             override fun onStartTrackingTouch(sb: SeekBar?) = Unit
             override fun onStopTrackingTouch(sb: SeekBar?) = Unit
         })
-        dispLabel.text = "当前 1.0% · P0 定档默认"
+        dispLabel.text = "当前 2.0% · 推荐默认"
 
         findViewById<RadioGroup>(R.id.viewModeGroup).setOnCheckedChangeListener { _, checkedId ->
             renderer.mode = if (checkedId == R.id.radioModeSbs) {
@@ -572,6 +596,8 @@ private fun startVideo(uri: Uri) {
         playing = false
         renderer.stopVideo()
         glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        // 退出视频：方向交还传感器（横屏片源曾被强制横屏）
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
         syncPlayIcons()
         refreshIdleHints()
         updateProgress()
@@ -614,6 +640,8 @@ private fun startVideo(uri: Uri) {
             setStatus("请先选择图片（实时流请选视频）")
             return
         }
+        // 与视频路径同一策略：横屏图片请求横屏，竖屏图片跟随传感器
+        applyOrientationForContent(bitmap.width, bitmap.height)
         val acc = if (useGpu) "GPU" else "CPU"
         lifecycleScope.launch {
             setStatus("推理中（${modelType.label} / $acc）…")
