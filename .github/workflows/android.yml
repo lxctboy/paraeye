@@ -53,7 +53,6 @@ jobs:
         env:
           PARAKEYSTORE_PASSWORD: ${{ secrets.PARAKEYSTORE_PASSWORD }}
           PARAKEY_ALIAS: ${{ secrets.PARAKEY_ALIAS }}
-          PARAKEY_PASSWORD: ${{ secrets.PARAKEY_PASSWORD }}
         with:
           gradle-version: '8.11.1'
           build-root-directory: paraeye/android

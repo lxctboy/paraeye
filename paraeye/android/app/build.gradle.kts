@@ -56,9 +56,10 @@ android {
     val paraeyeSigning = releaseKeystoreFile?.let { ks ->
         signingConfigs.create("paraeye") {
             storeFile = ks
+            // PKCS12 只有一档口令：证书袋与密钥袋同一密码，storePassword 必须等于 keyPassword
             storePassword = System.getenv("PARAKEYSTORE_PASSWORD")
             keyAlias = System.getenv("PARAKEY_ALIAS")
-            keyPassword = System.getenv("PARAKEY_PASSWORD")
+            keyPassword = System.getenv("PARAKEYSTORE_PASSWORD")
         }
     }
 
@@ -84,6 +85,15 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+
+    // release 不跑 lintVital：AGP 8.7.3 内置 lint 的 Kotlin UAST 处理器与 Kotlin 2.4.20
+    // 分析 API 不兼容（NonNullableMutableLiveDataDetector 抛 IncompatibleClassChangeError，
+    // 直接让 packageRelease 失败）。契约正确性由 testDebugUnitTest 覆盖，需要时手动跑
+    // `./gradlew lintDebug`。
+    lint {
+        checkReleaseBuilds = false
+        disable += "NullSafeMutableLiveData"
     }
 }
 

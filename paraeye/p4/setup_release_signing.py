@@ -56,11 +56,12 @@ def api(path: str, token: str, payload: dict | None = None, method: str = "GET")
         raise SystemExit(f"GitHub API {method} {path} -> HTTP {e.code}\n{detail}") from None
 
 
-def make_keystore() -> tuple[bytes, str, str, str]:
+def make_keystore() -> tuple[bytes, str, str]:
     if KEYSTORE_PATH.exists():
         raise SystemExit(f"{KEYSTORE_PATH} 已存在，删掉再跑（避免轮换掉已在用的签名）")
-    store_pw = secrets.token_urlsafe(18)
-    key_pw = secrets.token_urlsafe(18)
+    # PKCS12 只有一档口令（cryptography 的序列化对证书袋和密钥袋用同一密码），
+    # AGP 用 keyPassword 解密密钥袋，因此 storePassword 必须与 keyPassword 完全一致。
+    password = secrets.token_urlsafe(18)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "ParaEye"),
@@ -80,19 +81,19 @@ def make_keystore() -> tuple[bytes, str, str, str]:
     )
     p12 = pkcs12.serialize_key_and_certificates(
         name=b"paraeye", key=key, cert=cert, cas=None,
-        encryption_algorithm=serialization.BestAvailableEncryption(store_pw.encode()),
+        encryption_algorithm=serialization.BestAvailableEncryption(password.encode()),
     )
     KEYSTORE_PATH.write_bytes(p12)
     INFO_PATH.write_text(
         "ParaEye 发布签名（务必备份！丢失后无法给已安装的 ParaEye 发布更新）\n"
         f"keystore : {KEYSTORE_PATH}\n"
         f"alias    : {ALIAS}\n"
-        f"store pwd: {store_pw}\n"
-        f"key pwd  : {key_pw}\n"
-        "GitHub Secrets: PARAKEYSTORE_B64 / PARAKEYSTORE_PASSWORD / PARAKEY_ALIAS / PARAKEY_PASSWORD\n",
+        f"口令     : {password}\n"
+        "  （PKCS12 单口令：storePassword 与 keyPassword 相同）\n"
+        "GitHub Secrets: PARAKEYSTORE_B64 / PARAKEYSTORE_PASSWORD / PARAKEY_ALIAS\n",
         encoding="utf-8",
     )
-    return p12, store_pw, ALIAS, key_pw
+    return p12, password, ALIAS
 
 
 def put_secrets(repo: str, token: str, key_id: str, key_b64: str, values: dict[str, str]) -> None:
@@ -109,17 +110,18 @@ def main() -> None:
         raise SystemExit(__doc__)
     repo, token = sys.argv[1], sys.argv[2]
 
-    p12, store_pw, alias, key_pw = make_keystore()
+    p12, password, alias = make_keystore()
     print(f"keystore 已生成: {KEYSTORE_PATH} ({len(p12)} 字节)")
     print(f"凭证摘要: {INFO_PATH}")
 
     pk = api(f"/repos/{repo}/actions/secrets/public-key", token)
     put_secrets(repo, token, pk["key_id"], pk["key"], {
         "PARAKEYSTORE_B64": base64.b64encode(p12).decode(),
-        "PARAKEYSTORE_PASSWORD": store_pw,
+        "PARAKEYSTORE_PASSWORD": password,
         "PARAKEY_ALIAS": alias,
-        "PARAKEY_PASSWORD": key_pw,
     })
+    # 早期版本用过独立 keyPassword 的密钥文件，已废弃，删掉避免误用
+    api(f"/repos/{repo}/actions/secrets/PARAKEY_PASSWORD", token, method="DELETE")
     print("完成：GitHub Actions Secrets 就绪，可打 tag v* 出签名包。")
 
 
