@@ -155,7 +155,7 @@
 | P2 | GPU 渲染：视图合成 + SBS | **✅ 真机验证通过（2026-10-12）**：静态图路径 SBS 3D 效果确认可见（平行眼），符号约定无需翻转；GL 视图合成 + Full-SBS + 视差滑块（默认 1%）；低分辨率引导滤波仍在 P0 Python 侧，未移植 |
 | P3 | 实时流水线（本地文件）       | **✅ 真机跑通（2026-10-12，真我 GT8 Pro）**：MediaCodec 硬解 → OES → 降采样 FBO → readPixels → 异步推理 → SBS。GPU×INT8：视频 27.9FPS / 深度 6.0FPS / 推理 177.4ms（与 GL 渲染争抢 GPU，视频卡顿，弃用）；**CPU×INT8 定为主力配置：4 线程下推理 485.9ms / 深度 1.5FPS / 视频 60.0FPS 满帧**（默认线程时为 973.5ms）。P3.5 已做逐帧深度过渡（治低帧率跳变）+ 预处理 LUT/预分配 + GPU FP16 选项 + CPU XNNPACK 4 线程 + 统计窗口 2s（修深度帧率闪 0.0 假象），CI 全绿；摄像头流移出本阶段。**P3.6（2026-10-13）**：全屏观看（FrameLayout 重构：GL 铺满全屏 + 半透明控制面板覆盖层；解除竖屏锁 + configChanges 旋转不重启；进全屏自动横屏、沉浸式系统栏、双击画面切换）+ 发热控制（深度帧率上限 2~5FPS 旋钮：consumer.busy 闸门限流，推理占空比 90%→33%~50%，EMA 插值兜底） |
 | P4 | 性能优化 + 摄像头流       | **🔧 降分辨率已真机验证（2026-10-13）**：①质量闸门——280×518 竖屏输入 vs 原生宽高比真值 corr 0.977 / relMAE 0.035，线上 686×518 仅 0.766（竖屏被竖挤 2.35 倍），token 1813→740（0.41×），**质量+速度双赢**；②导出 v1 失败（litert-torch pt2e 重复量化 → 输出恒为常数 0.0887、输入无关），改走社区同款 **AI Edge Quantizer `dynamic_wi8_afp32`** 后成功，并加 CI 内自验证（输出方差/corr 不达标即 fail）；③新模型本地真实视频复验 **corr 0.9998 / relMAE 0.0072**（社区原版基线 0.9983/0.0104）；④Android 已切：`MODEL_W` 686→280、模型源自发布 release、删 FP32 单选（**APK 128MB→28MB**）；⑤**真机复测（GT8 Pro）：推理 485.9→165.8ms（2.9×）、深度 1.5→5.5FPS、视频 60.1FPS 满帧**。遗留：自导出模型 GPU delegate 加载失败（转换图含 GATHER_ND 等不支持的算子），app 已加 GPU→CPU 自动回退；GPU 真支持需换更干净的转换链路（实验项，待定）。**摄像头流已按用户决定跳过（2026-10-13）**：实现曾提交于 `48b8a31`（CameraX Preview 零拷贝汇入 GL 管线），因 CI 编译报错（ResolutionSelector 包名 / AspectRatioStrategy 常量名）加用户不再需要该功能，已 revert（`c4b7daf`）回到 5a59b96 全绿状态；代码保留在历史，需要时可 cherry-pick |
-| P5 | 产品化               | L/R 开关、视差滑块、保存（≤1920×1080 + 3D 元数据）、兼容性      |
+| P5 | 产品化               | **部分完成（2026-10-13）**：L/R 交换（swapCheck）与视差滑块已在 P2/P3 具备；**签名发布完成**——v1.0.0 tag 构建出正式签名 APK（56.4MB）并挂到 GitHub Release；**未做**：3D 视频导出保存（≤1920×1080 + 3D 元数据）与兼容性矩阵，用户选择「收尾：整理发布版」终止功能迭代 |
 
 ### 5.1 CI/CD：GitHub Actions 打包 APK（单人工作流）
 
@@ -195,6 +195,17 @@ jobs:
 - **模型文件（tflite，约 25~55MB）不进 Git**：用 Git LFS 或在 CI 中从 release URL 下载，避免仓库膨胀和 Actions 慢；
 - tag 触发 Release 构建需配置签名：`keystore` 存为 repo secret，CI 中还原后 `assembleRelease`；
 - 真机性能测试无法在 CI 做，APK 产出后手动装到测试机跑基准（P1 验收即为此流程）。
+
+**落地实况（2026-10-13，v1.0.0）**：上面是 P1 草案，实际实现改为 `gradle/gradle-build-action@v3` 指定 Gradle 8.11.1（免提交 wrapper jar），main 推送跑 `assembleDebug + testDebugUnitTest`，tag 推送额外走签名发布：
+
+1. `Decode release keystore`：把 `PARAKEYSTORE_B64` secret base64 解回 PKCS12，写入 `PARAKEYSTORE_PATH`；
+2. `Build signed release APK`：`assembleRelease`，`build.gradle.kts` 仅在拿到 `PARAKEYSTORE_PATH` 时启用 signingConfig；
+3. `Publish APK to GitHub Release`：apksigner 打印签名证书摘要 + sha256 写入 job summary，再 `gh release create/upload`（需要 job 级 `permissions: contents: write`）。
+
+踩过的三个坑：
+- **PKCS12 只有一档口令**：Python `cryptography` 序列化时证书袋与密钥袋共用一个密码，给 AGP 传独立的 `keyPassword` 必然 `KeytoolException: Given final block not properly padded`；
+- **AGP 8.7.3 lint 与 Kotlin 2.4.20 分析 API 不兼容**：`NonNullableMutableLiveDataDetector` 抛 `IncompatibleClassChangeError` 让 `lintVitalAnalyzeRelease` 失败，只能 `lint { checkReleaseBuilds = false }`；
+- **GITHUB_TOKEN 默认只读**，挂 Release 资产需要显式 `permissions: contents: write`。
 
 ### P1 模型对比实测清单（LiteRT，同一测试机）
 
