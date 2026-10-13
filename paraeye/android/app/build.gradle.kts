@@ -36,6 +36,11 @@ val downloadDepthModels by tasks.registering {
     }
 }
 
+// 发布签名：仅当环境变量注入 keystore 时启用（tag 构建由 CI Secrets 提供，
+// 见 .github/workflows/android.yml）。本地想要签名包时设置 PARAKEYSTORE_PATH
+// 等四个环境变量即可；没有则 release 走未签名产物，不影响 CI 绿灯。
+val releaseKeystoreFile = System.getenv("PARAKEYSTORE_PATH")?.let { file(it) }
+
 android {
     namespace = "com.paraeye.app"
     compileSdk = 35
@@ -45,13 +50,25 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "1.0.0"
+    }
+
+    val paraeyeSigning = releaseKeystoreFile?.let { ks ->
+        signingConfigs.create("paraeye") {
+            storeFile = ks
+            storePassword = System.getenv("PARAKEYSTORE_PASSWORD")
+            keyAlias = System.getenv("PARAKEY_ALIAS")
+            keyPassword = System.getenv("PARAKEY_PASSWORD")
+        }
     }
 
     buildTypes {
-        release {
+        getByName("release") {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (paraeyeSigning != null) {
+                signingConfig = paraeyeSigning
+            }
         }
     }
 

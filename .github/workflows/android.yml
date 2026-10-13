@@ -31,13 +31,51 @@ jobs:
           build-root-directory: paraeye/android
           arguments: testDebugUnitTest
 
-      - name: Build release APK on tag
+      # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
+      - name: Decode release keystore
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          PARAKEYSTORE_B64: ${{ secrets.PARAKEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PARAKEYSTORE_B64}" ]; then
+            echo "::warning::PARAKEYSTORE_B64 未配置，release 将为未签名包"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/keystore"
+          printf '%s' "$PARAKEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/keystore/paraeye.p12"
+          echo "keystore bytes: $(stat -c %s "$RUNNER_TEMP/keystore/paraeye.p12")"
+          echo "PARAKEYSTORE_PATH=$RUNNER_TEMP/keystore/paraeye.p12" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
         if: startsWith(github.ref, 'refs/tags/v')
         uses: gradle/gradle-build-action@v3
+        env:
+          PARAKEYSTORE_PASSWORD: ${{ secrets.PARAKEYSTORE_PASSWORD }}
+          PARAKEY_ALIAS: ${{ secrets.PARAKEY_ALIAS }}
+          PARAKEY_PASSWORD: ${{ secrets.PARAKEY_PASSWORD }}
         with:
           gradle-version: '8.11.1'
           build-root-directory: paraeye/android
           arguments: assembleRelease
+
+      - name: Publish APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          apk=$(ls paraeye/android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "apk: $apk ($(stat -c %s "$apk") bytes)"
+          echo "sha256: $(sha256sum "$apk" | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" 2>/dev/null \
+            | tee -a "$GITHUB_STEP_SUMMARY" || echo "apksigner 不可用，跳过签名校验"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk#ParaEye $TAG" --clobber
+          else
+            gh release create "$TAG" "$apk#ParaEye $TAG" --title "ParaEye $TAG" --generate-notes
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

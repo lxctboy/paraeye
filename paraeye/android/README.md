@@ -43,7 +43,9 @@ gradle assembleDebug          # 输出 app/build/outputs/apk/debug/app-debug.apk
 gradle testDebugUnitTest      # JVM 单测（预处理契约 + ImageNet 归一化 + NCHW 布局 + EMA）
 ```
 
-**CI**：push 到 `main` 或打 `v*` tag 时，GitHub Actions（`.github/workflows/android.yml`）自动构建 debug APK 并上传 artifact（无需本地 JDK/SDK）。tag 触发的 Release 签名待 P5 配置 keystore secret。
+**CI**：push 到 `main` 时构建 debug APK + 跑单测，artifact 名 `paraeye-debug-apk`（无需本地 JDK/SDK）。打 `v*` tag 时额外解出签名 keystore、出**正式签名** release APK，并自动挂到该 tag 的 GitHub Release（artifact 名 `paraeye-release-apk`）。
+
+**发布签名**：keystore 由 `paraeye/p4/setup_release_signing.py` 一次性生成（PKCS12 / RSA 2048 / alias `paraeye` / 25 年），本地文件在 `paraeye/release/`（已 gitignore，**务必自行备份，丢失后无法给已安装应用发更新**）。脚本同时把四条写入 GitHub Actions Secrets：`PARAKEYSTORE_B64`、`PARAKEYSTORE_PASSWORD`、`PARAKEY_ALIAS`、`PARAKEY_PASSWORD`；`build.gradle.kts` 只在拿到 `PARAKEYSTORE_PATH` 时启用签名，缺失则退回未签名构建，不会卡 CI。
 
 ## 使用
 

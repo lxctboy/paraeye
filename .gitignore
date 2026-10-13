@@ -21,6 +21,9 @@ paraeye/p4/dist/
 *.mp4
 paraeye/p0/__pycache__/
 
+# ---- 签名凭证（绝不入库；丢了就无法给已安装应用发更新）----
+paraeye/release/
+
 # ---- 工作区记忆/本地数据（不进仓库）----
 .workbuddy/
 
