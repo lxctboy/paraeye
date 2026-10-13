@@ -21,18 +21,62 @@ jobs:
           java-version: '17'
 
       # 直接指定 Gradle 版本，无需提交 wrapper jar；Android Studio 首次同步会本地生成 wrapper
-      - uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: '8.11.1'
-          build-root-directory: paraeye/android
-          arguments: assembleDebug
-
-      - name: Run unit tests
+      # 失败时把编译/单测错误摘要写进 job summary（否则只能翻全量日志定位）
+      - name: Build debug APK
+        id: debugBuild
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.11.1'
           build-root-directory: paraeye/android
-          arguments: testDebugUnitTest
+          arguments: assembleDebug --console=plain
+        continue-on-error: true
+
+      - name: Build summary (debug)
+        if: ${{ steps.debugBuild.outcome == 'failure' }}
+        run: |
+          {
+            echo "### assembleDebug 失败摘要"
+            echo '```'
+            grep -nE "^e: |error:|^> Task .*FAILED|What went wrong|Caused by:|Execution failed" \
+              paraeye/android/build.log 2>/dev/null | head -40 || echo "(未捕获到 build.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run unit tests
+        id: unitTests
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: '8.11.1'
+          build-root-directory: paraeye/android
+          arguments: testDebugUnitTest --console=plain
+        continue-on-error: true
+
+      - name: Test summary
+        if: ${{ steps.unitTests.outcome == 'failure' }}
+        run: |
+          {
+            echo "### testDebugUnitTest 失败摘要"
+            echo '```'
+            grep -nE "^e: |error:|FAILED|tests completed" \
+              paraeye/android/build.log 2>/dev/null | head -40 || echo "(未捕获到 build.log)"
+            find paraeye/android/app/build/reports/tests -name '*.html' 2>/dev/null \
+              | head -5 | sed 's/^/- 报告: /' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 上面两步用 continue-on-error 让摘要步骤能跑；这里做最终判定，避免假绿
+      - name: Verify build and tests succeeded
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          failed=0
+          [ "${{ steps.debugBuild.outcome }}" = "success" ] || failed=1
+          [ "${{ steps.unitTests.outcome }}" = "success" ] || failed=1
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::构建或单测未通过（debugBuild=${{ steps.debugBuild.outcome }}, unitTests=${{ steps.unitTests.outcome }}），详见上方摘要"
+            exit 1
+          fi
+          echo "构建与单测均通过"
 
       # ---- 发布版（仅 tag v* 触发）：解出签名 keystore 后出正式签名包 ----
       - name: Decode release keystore
